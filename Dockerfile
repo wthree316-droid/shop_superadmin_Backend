@@ -1,19 +1,21 @@
-# ใช้ Python เวอร์ชันเดียวกับที่คุณใช้ (แนะนำ 3.9 หรือ 3.10)
+# ใช้ Python 3.10 แบบ Slim (ขนาดเล็กและปลอดภัย)
 FROM python:3.10-slim
 
-# ตั้ง folder ทำงาน
-WORKDIR /app
+# 1. อนุญาตให้ Log ออกทันที (สำคัญมาก ถ้าไม่มีบรรทัดนี้ คุณจะไม่เห็น Error ว่าทำไมมันพัง)
+ENV PYTHONUNBUFFERED True
 
-# ก๊อปปี้ไฟล์รายการ library ไปลงก่อน (เพื่อ cache จะได้ build เร็ว)
-COPY requirements.txt .
+# ตั้ง Folder ทำงาน
+ENV APP_HOME /app
+WORKDIR $APP_HOME
 
-# ลง library ต่างๆ
+# 2. ลง Dependencies ก่อน (เพื่อใช้ Docker Cache)
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ก๊อปปี้โค้ดทั้งหมดลงไป
-COPY . .
+# 3. ก๊อปปี้ Code ทั้งหมดเข้าไป
+COPY . ./
 
-# บอก Docker ว่าเราจะใช้ Port นี้ (Cloud Run ชอบ Port 8080 แต่เราตั้งค่าได้)
-# แนะนำให้แก้โค้ด Python ให้รับ PORT จาก env ได้จะดีที่สุด
-# แต่ถ้าโค้ด fix 8000 ไว้ ให้ใช้คำสั่งนี้รัน:
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# 4. คำสั่งรัน Server (จุดที่คนพลาดบ่อยที่สุด!)
+# ต้องใช้ 'exec' เพื่อให้ Signal ส่งถึง Gunicorn
+# ต้อง Bind เข้ากับ :$PORT (ไม่ใช่ localhost)
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 app:app
