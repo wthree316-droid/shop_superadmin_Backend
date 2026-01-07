@@ -1,5 +1,5 @@
 # ใช้ Python เวอร์ชันเดียวกับที่คุณใช้ (แนะนำ 3.9 หรือ 3.10)
-FROM python:3.9-slim
+FROM python:3.10-slim
 
 # ตั้ง folder ทำงาน
 WORKDIR /app
