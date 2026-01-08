@@ -10,7 +10,9 @@ app = FastAPI(title="Lotto Multi-Tenant API")
 
 # 1. ตั้งค่า CORS (สำคัญมาก ไม่งั้น Frontend ยิงไม่เข้า)
 origins = [
-    "https://shop-superadmin-system.vercel.app",   
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://shop-superadmin-system.vercel.app",
 ]
 
 app.add_middleware(
@@ -27,7 +29,7 @@ app.include_router(api_router, prefix="/api/v1")
 def root():
     return {"message": "Welcome to Lotto API System"}
 
-if __name__ == "__main__":
-    # อ่านค่า PORT จาก Environment ถ้าไม่มีให้ใช้ 8000
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+# if __name__ == "__main__":
+#     # อ่านค่า PORT จาก Environment ถ้าไม่มีให้ใช้ 8000
+#     port = int(os.environ.get("PORT", 8080))
+#     uvicorn.run("main:app", host="0.0.0.0", port=port)

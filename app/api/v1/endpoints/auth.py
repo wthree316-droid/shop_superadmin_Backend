@@ -15,12 +15,12 @@ router = APIRouter()
 
 @router.post("/login", response_model=Token)
 def login_access_token(
-    request: Request,                  # <-- รับ Request
-    background_tasks: BackgroundTasks, # <-- รับ BackgroundTasks
+    request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends()
 ) -> Any:
-    # 1. ค้นหา User ใน DB
+    # 1. ค้นหา User
     user = db.query(User).filter(User.username == form_data.username).first()
     
     # 2. ตรวจสอบรหัสผ่าน
@@ -33,7 +33,7 @@ def login_access_token(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
 
-    # 3. สร้าง Access Token
+    # 3. สร้าง Access Token (ปรับปรุงการเรียกใช้ตาม Canvas ใหม่)
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     background_tasks.add_task(
@@ -43,10 +43,15 @@ def login_access_token(
         details={"username": user.username},
         request=request
     )
+
+    # [แก้ไข] เรียกใช้ create_access_token โดยส่ง subject และ role ตาม signature ใหม่
+    token = security.create_access_token(
+        subject=user.id, 
+        role=user.role.value, 
+        expires_delta=access_token_expires
+    )
+
     return {
-        "access_token": security.create_access_token(
-            data={"sub": str(user.id)},  # <--- ต้องส่งเป็น Dictionary แบบนี้ และแปลง UUID เป็น str
-            expires_delta=access_token_expires
-        ),
+        "access_token": token,
         "token_type": "bearer",
     }
