@@ -9,20 +9,23 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# 1. การตั้งค่า CORS (Cross-Origin Resource Sharing)
-# เพื่อความปลอดภัยและความง่ายในการใช้งานร่วมกับ Vercel
+origins = [
+    "http://localhost:5173", # สำหรับพัฒนาในเครื่อง
+    "http://127.0.0.1:5173",
+    "https://shop-superadmin-system-jbany0v20-tanakrits-projects-7e4e9491.vercel.app", # โดเมน Vercel ของคุณ
+]
+
 app.add_middleware(
     CORSMiddleware,
-    # ในช่วงพัฒนาใช้ ["*"] ได้ แต่ถ้าจะเอาขึ้นจริงแนะนำให้ใส่ URL ของ Vercel ลงไปแทน "*"
-    allow_origins=["*"], 
-    allow_credentials=True, # สำคัญ: ต้องเป็น True เพื่อให้หน้าบ้านส่ง Token ผ่าน Header ได้
+    allow_origins=origins, # ระบุโดเมนที่อนุญาต
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"]
+    expose_headers=["*"] # อนุญาตให้เข้าถึง Header ทั้งหมด
 )
 
-# 2. รวม API Router
 app.include_router(api_router, prefix="/api/v1")
+
 
 # 3. Health Check สำหรับ Cloud Run
 @app.get("/")

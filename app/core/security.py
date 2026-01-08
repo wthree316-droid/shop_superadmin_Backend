@@ -34,10 +34,21 @@ def create_access_token(subject: Union[str, Any], role: str, expires_delta: Opti
     return encoded_jwt
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """
+    ตรวจสอบรหัสผ่าน โดยป้องกันปัญหา bcrypt 72-character limit
+    """
+    try:
+        # Bcrypt มีข้อจำกัดที่ 72 bytes หากยาวกว่านั้นจะตัดทิ้ง
+        # เราตัดเองก่อนเพื่อป้องกัน passlib พ่น ValueError
+        return pwd_context.verify(plain_password[:72], hashed_password)
+    except Exception:
+        return False
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """
+    สร้าง Hash จากรหัสผ่าน (จำกัด 72 ตัวอักษร)
+    """
+    return pwd_context.hash(password[:72])
 
 def decode_token(token: str) -> Optional[dict]:
     """
