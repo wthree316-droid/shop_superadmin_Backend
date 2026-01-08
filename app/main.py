@@ -3,29 +3,35 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.v1.router import api_router
 
-import os
-import uvicorn
-
-app = FastAPI(title="Lotto Multi-Tenant API")
-
-# 1. ตั้งค่า CORS (สำคัญมาก ไม่งั้น Frontend ยิงไม่เข้า)
-origins = ["*"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],  # อนุญาตทุก Method (GET, POST, PUT, DELETE)
-    allow_headers=["*"],  # อนุญาตทุก Header
+app = FastAPI(
+    title="shop Multi-Tenant API",
+    description="ระบบจัดการร้านค้าออนไลน์ระดับ Production",
+    version="1.0.0"
 )
 
+# 1. การตั้งค่า CORS (Cross-Origin Resource Sharing)
+# เพื่อความปลอดภัยและความง่ายในการใช้งานร่วมกับ Vercel
+app.add_middleware(
+    CORSMiddleware,
+    # ในช่วงพัฒนาใช้ ["*"] ได้ แต่ถ้าจะเอาขึ้นจริงแนะนำให้ใส่ URL ของ Vercel ลงไปแทน "*"
+    allow_origins=["*"], 
+    allow_credentials=True, # สำคัญ: ต้องเป็น True เพื่อให้หน้าบ้านส่ง Token ผ่าน Header ได้
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
+
+# 2. รวม API Router
 app.include_router(api_router, prefix="/api/v1")
 
+# 3. Health Check สำหรับ Cloud Run
 @app.get("/")
 def root():
-    return {"message": "Welcome to Lotto API System"}
+    return {
+        "status": "online",
+        "message": "Welcome to shop API System",
+        "version": "1.0.0"
+    }
 
-if __name__ == "__main__":
-    # อ่านค่า PORT จาก Environment ถ้าไม่มีให้ใช้ 8000
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+# หมายเหตุ: ไม่ต้องใส่ uvicorn.run ตรงนี้ 
+# เพราะ Dockerfile ของเราใช้ Gunicorn รันจากภายนอกอยู่แล้ว
