@@ -9,11 +9,7 @@ import uvicorn
 app = FastAPI(title="Lotto Multi-Tenant API")
 
 # 1. ตั้งค่า CORS (สำคัญมาก ไม่งั้น Frontend ยิงไม่เข้า)
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://shop-superadmin-system.vercel.app",
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
