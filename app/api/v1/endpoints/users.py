@@ -34,6 +34,7 @@ def read_user_me(
         "credit_balance": current_user.credit_balance,
         "shop_name": shop_name  # <--- ใส่ชื่อร้านตรงนี้
     }
+
 # API ดึงรายชื่อ Admin ของร้าน (สำหรับ Superadmin)
 @router.get("/shop/{shop_id}/admins", response_model=List[UserResponse])
 def read_shop_admins(

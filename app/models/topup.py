@@ -46,3 +46,32 @@ class TopupRequest(Base):
     shop = relationship("Shop")
     user = relationship("User", foreign_keys=[user_id])
     approver = relationship("User", foreign_keys=[approved_by])
+
+    # app/models/topup.py (เพิ่มต่อท้าย)
+
+class WithdrawRequest(Base):
+    __tablename__ = "withdraw_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    
+    amount = Column(DECIMAL(15, 2), nullable=False)
+    
+    # ข้อมูลบัญชีลูกค้า
+    bank_name = Column(String(50), nullable=False)
+    account_name = Column(String(100), nullable=False)
+    account_number = Column(String(50), nullable=False)
+    
+    status = Column(String(20), default='PENDING')
+    
+    admin_remark = Column(Text, nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationship
+    shop = relationship("Shop")
+    user = relationship("User", foreign_keys=[user_id])

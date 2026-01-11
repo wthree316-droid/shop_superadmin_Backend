@@ -541,27 +541,26 @@ def get_daily_stats(
 
 # ดูประวัติการแทง
 @router.get("/history", response_model=List[TicketResponse])
-def get_my_tickets(
+def read_history(
     skip: int = 0,
-    limit: int = 20,
+    limit: int = 100,
+    lotto_type_id: Optional[UUID] = None, # [1] เพิ่มตัวแปรนี้
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # Query Ticket ของ User คนนี้ เรียงจากใหม่ไปเก่า
-    tickets = (
-        db.query(Ticket)
-        .options(
-            joinedload(Ticket.user),
-            joinedload(Ticket.items),
-            joinedload(Ticket.lotto_type)
-        )
-        .filter(Ticket.user_id == current_user.id)
-        .order_by(Ticket.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    query = db.query(Ticket).options(
+        joinedload(Ticket.items),
+        joinedload(Ticket.lotto_type)
+    ).filter(Ticket.user_id == current_user.id) # ดูเฉพาะของตัวเอง
+
+    # [2] เพิ่ม Logic การกรอง
+    if lotto_type_id:
+        query = query.filter(Ticket.lotto_type_id == lotto_type_id)
+
+    # เรียงลำดับ ล่าสุด -> เก่าสุด
+    tickets = query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
     return tickets
+
 # ดูประวัติของร้าน
 @router.get("/shop_history", response_model=List[TicketResponse])
 def get_shop_tickets(
@@ -816,3 +815,30 @@ def delete_rate_profile(
     db.commit()
     
     return {"status": "success", "message": "Deleted successfully"}
+
+#  ดึงรายละเอียดหวย 1 รายการ พร้อมเรทจ่าย (สำหรับหน้าแทง)
+@router.get("/lottos/{lotto_id}", response_model=None) # response_model=None ไปก่อนเพื่อความยืดหยุ่น หรือจะสร้าง Schema ใหม่ก็ได้
+def get_lotto_detail(
+    lotto_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # 1. ดึงข้อมูลหวย + Rate Profile
+    lotto = db.query(LottoType).options(joinedload(LottoType.rate_profile)).filter(LottoType.id == lotto_id).first()
+    if not lotto:
+        raise HTTPException(status_code=404, detail="Lotto not found")
+
+    # 2. แปลงข้อมูลเรทให้อยู่ในรูปแบบที่ Frontend ใช้ง่าย
+    # (Backend เก็บใน rate_profile.rates แต่เราจะยุบรวมมาส่งให้เลย)
+    rates = {}
+    if lotto.rate_profile:
+        rates = lotto.rate_profile.rates # { "2up": 90, "3top": 900, ... }
+
+    return {
+        "id": lotto.id,
+        "name": lotto.name,
+        "img_url": lotto.img_url,
+        "close_time": lotto.close_time,
+        "rates": rates, # <--- ส่งเรทไปให้หน้าบ้านคำนวณรางวัล
+        "is_active": lotto.is_active
+    }

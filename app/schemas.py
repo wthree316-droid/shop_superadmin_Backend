@@ -260,3 +260,23 @@ class TopupResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class WithdrawCreate(BaseModel):
+    amount: Decimal
+    bank_name: str
+    account_name: str
+    account_number: str
+
+    @field_validator('amount')
+    def validate_amount(cls, v):
+        if v <= 0: raise ValueError("ยอดเงินต้องมากกว่า 0")
+        return v
+
+class WithdrawResponse(WithdrawCreate):
+    id: UUID
+    status: str
+    created_at: datetime
+    admin_remark: Optional[str]
+    
+    class Config:
+        from_attributes = True

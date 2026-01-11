@@ -33,6 +33,11 @@ def login_access_token(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
 
+    # [เพิ่ม] เช็คสถานะร้านด้วย ถ้า user มีสังกัดร้าน
+    if user.shop_id and user.shop: 
+        if not user.shop.is_active:
+            raise HTTPException(status_code=400, detail="Shop is suspended. Contact support.")
+        
     # 3. สร้าง Access Token (ปรับปรุงการเรียกใช้ตาม Canvas ใหม่)
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
