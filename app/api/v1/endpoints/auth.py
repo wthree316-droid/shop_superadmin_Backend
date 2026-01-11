@@ -44,7 +44,7 @@ def login_access_token(
         request=request
     )
 
-    # [แก้ไข] เรียกใช้ create_access_token โดยส่ง subject และ role ตาม signature ใหม่
+    # เรียกใช้ create_access_token โดยส่ง subject และ role ตาม signature ใหม่
     token = security.create_access_token(
         subject=user.id, 
         role=user.role.value, 

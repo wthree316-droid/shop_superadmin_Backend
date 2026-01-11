@@ -12,7 +12,8 @@ app = FastAPI(
 origins = [
     "http://localhost:5173", # สำหรับพัฒนาในเครื่อง
     "http://127.0.0.1:5173",
-    "https://shop-superadmin-system-jbany0v20-tanakrits-projects-7e4e9491.vercel.app", # โดเมน Vercel ของคุณ
+    "https://shop-superadmin-system.vercel.app",
+    "https://shop-superadmin-system-jbany0v20-tanakrits-projects-7e4e9491.vercel.app",
 ]
 
 app.add_middleware(

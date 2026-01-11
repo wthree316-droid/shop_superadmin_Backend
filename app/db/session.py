@@ -1,19 +1,28 @@
+# app/db/session.py
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.core.config import settings # เดี๋ยวเราจะสร้าง config ใน step ถัดไป
+from app.core.config import settings
 
-# ถ้าใช้ Supabase แนะนำให้เติม query parameter นี้แก้ปัญหา connection pool
-# แต่ถ้าใช้ string ปกติก็ใส่ได้เลย
 SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
 
-# สร้าง Engine
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+#  เพิ่ม Argument สำหรับจัดการ Connection Pool
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    # 1. pool_pre_ping=True: เช็คก่อนเสมอว่า Connection ยังดีอยู่ไหม ถ้าตายจะต่อใหม่ให้เอง (สำคัญมาก!)
+    pool_pre_ping=True, 
+    
+    # 2. pool_size: จำนวน Connection ที่เปิดค้างไว้ (Cloud Run ปกติใช้ 5-10 ก็พอต่อ 1 instance)
+    pool_size=10, 
+    
+    # 3. max_overflow: ยอมให้เกิน pool_size ได้กี่อันช่วงคนเยอะ
+    max_overflow=20,
+    
+    # 4. pool_recycle: รีไซเคิล connection ทุกๆ 1 ชั่วโมง (3600 วิ) ป้องกัน DB ตัดเพราะนานเกิน
+    pool_recycle=3600
+)
 
-# สร้าง Session Factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Dependency Function (พระเอกของเรา)
-# ฟังก์ชันนี้จะถูกเรียกทุกครั้งที่มี Request เข้ามา และปิด connection เมื่อเสร็จงาน
 def get_db():
     db = SessionLocal()
     try:

@@ -1,5 +1,6 @@
 # Import Model ทุกตัวเข้ามาไว้ที่นี่
 from .user import User, UserRole
 from .shop import Shop
-from .lotto import LottoType, Ticket, TicketItem
+from .lotto import LottoType, Ticket, TicketItem, LottoResult, NumberRisk, RateProfile
 from .audit import AuditLog
+from .topup import TopupRequest, ShopBankAccount

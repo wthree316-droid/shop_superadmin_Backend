@@ -19,14 +19,10 @@ def cleanup_global_data(
 
     try:
         # ลบตามลำดับ (ลูก -> แม่) เพื่อไม่ให้ติด Foreign Key
-        # 1. ลบรายการหวยย่อย
-        db.execute(text("DELETE FROM ticket_items"))
-        # 2. ลบโพย
-        db.execute(text("DELETE FROM tickets"))
-        # 3. ลบประวัติ Log
-        db.execute(text("DELETE FROM audit_logs"))
-        # 4. ลบผลรางวัล (Optional: ถ้าอยากล้างผลด้วย)
-        db.execute(text("DELETE FROM lotto_results"))
+        db.execute(text("DELETE FROM ticket_items"))   # 1. รายการย่อย
+        db.execute(text("DELETE FROM tickets"))        # 2. หัวบิล
+        db.execute(text("DELETE FROM audit_logs"))     # 3. ประวัติ
+        db.execute(text("DELETE FROM lotto_results"))  # 4. ผลรางวัล
         
         db.commit()
         return {"status": "success", "message": "All operational data cleaned"}
@@ -45,20 +41,24 @@ def cleanup_shop_data(
         raise HTTPException(status_code=403, detail="Superadmin privilege required")
 
     try:
-        # 1. ลบ Ticket Items ของร้านนี้ (ต้อง Join หรือ Subquery)
-        db.execute(text(f"""
+        # [แก้ไข - สำคัญมาก] ใช้ Parameter Binding (:sid) แทนการต่อ String
+        # เพื่อป้องกัน SQL Injection แม้ shop_id จะดูเหมือน UUID ก็ตาม
+        
+        # 1. ลบ Ticket Items (ใช้ Subquery)
+        db.execute(text("""
             DELETE FROM ticket_items 
-            WHERE ticket_id IN (SELECT id FROM tickets WHERE shop_id = '{shop_id}')
-        """))
+            WHERE ticket_id IN (SELECT id FROM tickets WHERE shop_id = :sid)
+        """), {"sid": shop_id})
         
         # 2. ลบ Tickets ของร้านนี้
-        db.execute(text(f"DELETE FROM tickets WHERE shop_id = '{shop_id}'"))
+        db.execute(text("DELETE FROM tickets WHERE shop_id = :sid"), {"sid": shop_id})
         
         # 3. ลบ Logs ของร้านนี้
-        db.execute(text(f"DELETE FROM audit_logs WHERE shop_id = '{shop_id}'"))
+        db.execute(text("DELETE FROM audit_logs WHERE shop_id = :sid"), {"sid": shop_id})
 
         db.commit()
         return {"status": "success", "message": f"Data for shop {shop_id} cleaned"}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Cleanup Error: {e}") # print error ให้เห็นใน log ด้วย
+        raise HTTPException(status_code=500, detail="Failed to cleanup shop data")

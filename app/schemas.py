@@ -32,6 +32,7 @@ class UserCreate(UserBase):
     shop_id: Optional[UUID] = None
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     full_name: Optional[str] = None
     password: Optional[str] = None
     is_active: Optional[bool] = None
@@ -45,7 +46,7 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     credit_balance: Decimal
-    shop_name: Optional[str] = None  # [เพิ่ม] เพื่อรองรับ API /me ที่ส่งชื่อร้านกลับมาด้วย
+    shop_name: Optional[str] = None  # เพื่อรองรับ API /me ที่ส่งชื่อร้านกลับมาด้วย
 
     class Config:
         from_attributes = True
@@ -68,7 +69,7 @@ class BetItemCreate(BaseModel):
     @field_validator('amount')
     @classmethod
     def validate_amount(cls, v):
-        if v <= 0: raise ValueError("ยอดแทงต้องมากกว่า 0")
+        if v <= 1: raise ValueError("ยอดแทงต้องมากกว่า 1")
         return v
 
 class BetItemResponse(BaseModel):
@@ -217,6 +218,45 @@ class AuditLogResponse(BaseModel):
     created_at: datetime
     user_agent: Optional[str]
     user_id: UUID
+    
+    class Config:
+        from_attributes = True
+
+
+# --- Bank Account ---
+class BankAccountCreate(BaseModel):
+    bank_name: str
+    account_name: str
+    account_number: str
+
+class BankAccountResponse(BankAccountCreate):
+    id: UUID
+    is_active: bool
+    class Config:
+        from_attributes = True
+
+# --- Top-up Request ---
+class TopupCreate(BaseModel):
+    amount: Decimal
+    proof_image: Optional[str] = None # URL รูปสลิป
+
+    @field_validator('amount')
+    def validate_amount(cls, v):
+        if v <= 0: raise ValueError("ยอดเงินต้องมากกว่า 0")
+        return v
+
+class TopupAction(BaseModel):
+    status: str # "APPROVED" หรือ "REJECTED"
+    remark: Optional[str] = None
+
+class TopupResponse(BaseModel):
+    id: UUID
+    amount: Decimal
+    proof_image: Optional[str]
+    status: str
+    created_at: datetime
+    user_id: UUID
+    username: Optional[str] = None # เอาไว้โชว์ชื่อคนแจ้ง
     
     class Config:
         from_attributes = True
