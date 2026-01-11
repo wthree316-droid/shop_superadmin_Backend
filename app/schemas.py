@@ -218,6 +218,8 @@ class AuditLogResponse(BaseModel):
     created_at: datetime
     user_agent: Optional[str]
     user_id: UUID
+    username: Optional[str] = None
+    shop_name: Optional[str] = None
     
     class Config:
         from_attributes = True

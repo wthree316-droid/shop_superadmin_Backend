@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, Enum as SAEnum, DateTime
+from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, Enum as SAEnum, DateTime, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -28,6 +28,7 @@ class User(Base):
     credit_balance = Column(DECIMAL(15, 2), default=0.00)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
+    failed_attempts = Column(Integer, default=0)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
     # Relationship: เชื่อมกลับไปหา Shop
     shop = relationship("Shop", back_populates="users")

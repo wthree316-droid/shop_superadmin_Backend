@@ -4,8 +4,30 @@ from sqlalchemy import text
 from app.api import deps
 from app.db.session import get_db
 from app.models.user import User, UserRole
+from app.models.shop import Shop        # [เพิ่ม]
+from app.models.lotto import Ticket
 
 router = APIRouter()
+
+@router.get("/stats")
+def get_system_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    if current_user.role != UserRole.superadmin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    total_shops = db.query(Shop).count()
+    active_shops = db.query(Shop).filter(Shop.is_active == True).count()
+    total_users = db.query(User).count()
+    total_tickets = db.query(Ticket).count()
+
+    return {
+        "total_shops": total_shops,
+        "active_shops": active_shops,
+        "total_users": total_users,
+        "total_tickets": total_tickets
+    }
 
 # 1. ล้างข้อมูลทั้งระบบ (Global Cleanup)
 @router.delete("/cleanup/global")
@@ -13,16 +35,20 @@ def cleanup_global_data(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # Security ขั้นสูงสุด: ต้องเป็น Superadmin เท่านั้น
     if current_user.role != UserRole.superadmin:
         raise HTTPException(status_code=403, detail="Superadmin privilege required")
 
     try:
         # ลบตามลำดับ (ลูก -> แม่) เพื่อไม่ให้ติด Foreign Key
-        db.execute(text("DELETE FROM ticket_items"))   # 1. รายการย่อย
-        db.execute(text("DELETE FROM tickets"))        # 2. หัวบิล
-        db.execute(text("DELETE FROM audit_logs"))     # 3. ประวัติ
-        db.execute(text("DELETE FROM lotto_results"))  # 4. ผลรางวัล
+        db.execute(text("DELETE FROM ticket_items"))   # รายการแทง
+        db.execute(text("DELETE FROM tickets"))        # โพย
+        db.execute(text("DELETE FROM lotto_results"))  # ผลรางวัล
+        
+        # [เพิ่ม] ลบข้อมูลการเงิน (สำคัญ!)
+        db.execute(text("DELETE FROM topup_requests"))    # ประวัติเติมเงิน
+        db.execute(text("DELETE FROM withdraw_requests")) # ประวัติถอนเงิน
+        
+        db.execute(text("DELETE FROM audit_logs"))     # ประวัติการใช้งาน
         
         db.commit()
         return {"status": "success", "message": "All operational data cleaned"}
@@ -41,24 +67,31 @@ def cleanup_shop_data(
         raise HTTPException(status_code=403, detail="Superadmin privilege required")
 
     try:
-        # [แก้ไข - สำคัญมาก] ใช้ Parameter Binding (:sid) แทนการต่อ String
-        # เพื่อป้องกัน SQL Injection แม้ shop_id จะดูเหมือน UUID ก็ตาม
+        # ใช้ Parameter Binding ป้องกัน SQL Injection
+        params = {"sid": shop_id}
         
         # 1. ลบ Ticket Items (ใช้ Subquery)
         db.execute(text("""
             DELETE FROM ticket_items 
             WHERE ticket_id IN (SELECT id FROM tickets WHERE shop_id = :sid)
-        """), {"sid": shop_id})
+        """), params)
         
-        # 2. ลบ Tickets ของร้านนี้
-        db.execute(text("DELETE FROM tickets WHERE shop_id = :sid"), {"sid": shop_id})
+        # 2. ลบ Tickets
+        db.execute(text("DELETE FROM tickets WHERE shop_id = :sid"), params)
         
-        # 3. ลบ Logs ของร้านนี้
-        db.execute(text("DELETE FROM audit_logs WHERE shop_id = :sid"), {"sid": shop_id})
+        # 3. [เพิ่ม] ลบข้อมูลการเงินของร้านนี้
+        db.execute(text("DELETE FROM topup_requests WHERE shop_id = :sid"), params)
+        db.execute(text("DELETE FROM withdraw_requests WHERE shop_id = :sid"), params)
+        
+        # 4. ลบ Logs
+        db.execute(text("DELETE FROM audit_logs WHERE shop_id = :sid"), params)
 
         db.commit()
         return {"status": "success", "message": f"Data for shop {shop_id} cleaned"}
     except Exception as e:
         db.rollback()
-        print(f"Cleanup Error: {e}") # print error ให้เห็นใน log ด้วย
+        print(f"Cleanup Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to cleanup shop data")
+    
+
+

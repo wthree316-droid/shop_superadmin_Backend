@@ -5,12 +5,51 @@ from sqlalchemy.orm import Session
 from app.models.user import UserRole, User
 from app.schemas import UserCreate, MemberCreate, CreditAdjustment, UserResponse, UserUpdate
 from app.api import deps
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, create_access_token
 from app.db.session import get_db
 from app.core.audit_logger import write_audit_log
-
+from datetime import timedelta
+from app.core.config import settings
 
 router = APIRouter()
+
+# API สำหรับ Superadmin เพื่อขอล็อกอินเป็นร้านค้า (Impersonate)
+@router.post("/impersonate/{shop_id}")
+def impersonate_shop_admin(
+    shop_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # 1. เช็คว่าเป็น Superadmin จริงไหม
+    if current_user.role != UserRole.superadmin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # 2. หา Admin ของร้านนั้น (เอาคนแรกที่เจอ)
+    shop_admin = db.query(User).filter(
+        User.shop_id == shop_id,
+        User.role == UserRole.admin,
+        User.is_active == True
+    ).first()
+
+    if not shop_admin:
+        raise HTTPException(status_code=404, detail="Shop has no active admin")
+
+    # 3. สร้าง Token เสมือนว่าล็อกอินเป็น Admin คนนั้น
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        subject=str(shop_admin.id), expires_delta=access_token_expires
+    )
+
+    # 4. ส่ง Token กลับไป พร้อมบอกว่าเป็นใคร
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "username": shop_admin.username,
+            "role": shop_admin.role,
+            "shop_id": shop_admin.shop_id
+        }
+    }
 
 @router.get("/me", response_model=UserResponse)
 def read_user_me(
@@ -173,6 +212,14 @@ def update_member_by_admin(
     # 4.4 แก้สถานะ (เช่น ปลดแบน/แบน User)
     if user_in.is_active is not None:
         member.is_active = user_in.is_active
+    
+    if user_in.is_active is not None:
+        member.is_active = user_in.is_active
+        
+        # [เพิ่ม Logic ปลดล็อค] ถ้า Admin สั่ง Active ให้รีเซ็ตการล็อคด้วย
+        if user_in.is_active == True:
+            member.failed_attempts = 0
+            member.locked_until = None
 
     db.add(member)
     db.commit()

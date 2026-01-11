@@ -19,7 +19,9 @@ class RateProfile(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False) # ชื่อเรท เช่น "เรทมาตรฐาน", "เรท VIP"
     rates = Column(JSON, default={})      # เก็บ JSON { "2up": 90, "3top": 900 }
-    
+    shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True) 
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     # Relationship
     lottos = relationship("LottoType", back_populates="rate_profile")
 

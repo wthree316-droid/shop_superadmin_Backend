@@ -35,10 +35,19 @@ try:
 except Exception as e:
     print(f"Supabase Init Error: {e}")
 
+# 1. แก้ไขตอนดึงข้อมูล (ให้เห็นเฉพาะของร้านตัวเอง + ของกลางที่เป็น Template)
 @router.get("/rates", response_model=List[RateProfileResponse])
-def get_rate_profiles(db: Session = Depends(get_db)):
-    return db.query(RateProfile).all()
+def get_rate_profiles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user) # [เพิ่ม] ต้อง Login ก่อน
+):
+    # กรองเอาเฉพาะ (ของร้านตัวเอง OR ที่ไม่มีเจ้าของ/ของกลาง)
+    # สมมติว่าของกลางคือ shop_id เป็น NULL
+    return db.query(RateProfile).filter(
+        (RateProfile.shop_id == current_user.shop_id) | (RateProfile.shop_id == None)
+    ).all()
 
+# 2. แก้ไขตอนสร้าง (ให้บันทึก shop_id ด้วย)
 @router.post("/rates", response_model=RateProfileResponse)
 def create_rate_profile(
     profile_in: RateProfileCreate,
@@ -48,7 +57,14 @@ def create_rate_profile(
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    new_profile = RateProfile(name=profile_in.name, rates=profile_in.rates)
+    # [เพิ่ม] logic กำหนด shop_id
+    shop_id = current_user.shop_id if current_user.role == UserRole.admin else None
+
+    new_profile = RateProfile(
+        name=profile_in.name, 
+        rates=profile_in.rates,
+        shop_id=shop_id # [เพิ่ม] บันทึกว่าร้านไหนสร้าง
+    )
     db.add(new_profile)
     db.commit()
     db.refresh(new_profile)
@@ -825,9 +841,11 @@ def get_lotto_detail(
 ):
     # 1. ดึงข้อมูลหวย + Rate Profile
     lotto = db.query(LottoType).options(joinedload(LottoType.rate_profile)).filter(LottoType.id == lotto_id).first()
-    if not lotto:
-        raise HTTPException(status_code=404, detail="Lotto not found")
-
+    if current_user.role == UserRole.admin and lotto.shop_id != current_user.shop_id:
+         # อนุญาตเฉพาะกรณีที่เป็น Template กลาง
+         if not lotto.is_template:
+             raise HTTPException(status_code=403, detail="Access denied")
+         
     # 2. แปลงข้อมูลเรทให้อยู่ในรูปแบบที่ Frontend ใช้ง่าย
     # (Backend เก็บใน rate_profile.rates แต่เราจะยุบรวมมาส่งให้เลย)
     rates = {}
