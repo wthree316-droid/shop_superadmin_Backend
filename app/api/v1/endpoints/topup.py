@@ -8,7 +8,8 @@ from app.api import deps
 from app.db.session import get_db
 from app.models.user import User, UserRole
 from app.core.audit_logger import write_audit_log
-
+from app.core.notify import send_line_message
+from app.models.shop import Shop 
 # คุณต้องสร้าง Models ใน Python ให้ตรงกับ SQL ที่สร้างด้วยนะครับ
 # สมมติว่าสร้าง class TopupRequest และ ShopBankAccount ใน models/topup.py แล้ว
 from app.models.topup import TopupRequest, ShopBankAccount 
@@ -79,7 +80,23 @@ def create_topup_request(
     db.commit()
     db.refresh(new_req)
 
-    # (Optional) แจ้งเตือน Admin ทาง Line Notify ตรงนี้ได้
+    # --- [ส่วนแจ้งเตือน LINE แบบใหม่] ---
+    shop = db.query(Shop).filter(Shop.id == current_user.shop_id).first()
+    
+    # เช็คว่ามีทั้ง Token และ Target ID ครบไหม
+    if shop and shop.line_channel_token and shop.line_target_id:
+        msg = f"💰 แจ้งฝากใหม่!\n" \
+              f"User: {current_user.username}\n" \
+              f"ยอดเงิน: {topup_in.amount:,.2f} บาท\n" \
+              f"เวลา: {datetime.now().strftime('%H:%M:%S')}"
+        
+        background_tasks.add_task(
+            send_line_message,
+            channel_token=shop.line_channel_token,
+            target_id=shop.line_target_id,
+            message=msg,
+            image_url=topup_in.proof_image
+        )
     
     return new_req
 

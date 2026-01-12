@@ -7,6 +7,8 @@ from app.models.lotto import Ticket, TicketItem, TicketStatus, LottoResult
 from app.schemas import RewardRequest, RewardResultResponse, RewardHistoryResponse
 from app.core.reward_calculator import RewardCalculator
 from app.core.audit_logger import write_audit_log
+from app.models.shop import Shop
+from app.core.notify import send_line_message
 from decimal import Decimal
 from datetime import date
 from typing import List, Optional
@@ -117,6 +119,24 @@ def issue_reward(
                 },
                 request=request
             )
+
+            # --- [ส่วนแจ้งเตือน LINE แบบใหม่] ---
+        shop = db.query(Shop).filter(Shop.id == current_user.shop_id).first()
+
+        if shop and shop.line_channel_token and shop.line_target_id:
+            msg = f"🏆 สรุปผลรางวัล\n" \
+                  f"งวดวันที่: {date.today()}\n" \
+                  f"เลขที่ออก: {data.top_3} | {data.bottom_2}\n" \
+                  f"----------------\n" \
+                  f"คนถูกรางวัล: {total_winners} ใบ\n" \
+                  f"จ่ายรวม: {total_payout:,.2f} บาท"
+
+            background_tasks.add_task(
+                send_line_message,
+                channel_token=shop.line_channel_token,
+                target_id=shop.line_target_id,
+                message=msg
+            )
             
     except Exception as e:
         db.rollback()
@@ -129,7 +149,7 @@ def issue_reward(
         "total_payout": total_payout
     }
 
-# [แก้ไข] เปลี่ยนชื่อฟังก์ชันและ Type Hint
+# เปลี่ยนชื่อฟังก์ชันและ Type Hint
 @router.get("/history", response_model=List[RewardHistoryResponse])
 def read_reward_history(
     skip: int = 0,

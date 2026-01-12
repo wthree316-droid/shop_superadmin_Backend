@@ -12,7 +12,8 @@ from app.models.user import User, UserRole
 from app.models.topup import WithdrawRequest # Import Model ที่เพิ่งสร้าง
 from app.schemas import WithdrawCreate, WithdrawResponse, TopupAction
 from app.core.audit_logger import write_audit_log
-
+from app.models.shop import Shop # [เพิ่ม]
+from app.core.notify import send_line_message
 router = APIRouter()
 
 # 1. แจ้งถอนเงิน (User)
@@ -59,6 +60,24 @@ def create_withdraw_request(
     
     db.commit()
     db.refresh(new_req)
+
+    # --- [ส่วนแจ้งเตือน LINE แบบใหม่] ---
+    shop = db.query(Shop).filter(Shop.id == current_user.shop_id).first()
+    
+    if shop and shop.line_channel_token and shop.line_target_id:
+        msg = f"💸 แจ้งถอนเงิน!\n" \
+              f"User: {current_user.username}\n" \
+              f"จำนวน: {withdraw_in.amount:,.2f} บาท\n" \
+              f"เข้าบัญชี: {withdraw_in.bank_name} - {withdraw_in.account_number}\n" \
+              f"คงเหลือ: {user.credit_balance:,.2f} บาท"
+        
+        background_tasks.add_task(
+            send_line_message,
+            channel_token=shop.line_channel_token,
+            target_id=shop.line_target_id,
+            message=msg
+        )
+        
     return new_req
 
 # 2. ดูประวัติการถอน (User)
