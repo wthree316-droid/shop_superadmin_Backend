@@ -37,7 +37,9 @@ def impersonate_shop_admin(
     # 3. สร้าง Token เสมือนว่าล็อกอินเป็น Admin คนนั้น
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        subject=str(shop_admin.id), expires_delta=access_token_expires
+        subject=str(shop_admin.id), 
+        role=shop_admin.role.value,
+        expires_delta=access_token_expires
     )
 
     # 4. ส่ง Token กลับไป พร้อมบอกว่าเป็นใคร

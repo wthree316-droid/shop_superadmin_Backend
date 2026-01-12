@@ -6,9 +6,40 @@ from app.api import deps
 from app.db.session import get_db
 from app.models.shop import Shop
 from app.models.user import User, UserRole
-from app.schemas import ShopCreate, ShopResponse
+from app.schemas import ShopCreate, ShopResponse, ShopConfigUpdate
 
 router = APIRouter()
+
+# [เพิ่มใหม่] API สำหรับ Admin ร้านค้า แก้ไขตั้งค่า LINE ของตัวเอง
+@router.put("/config")
+def update_shop_config(
+    config_in: ShopConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # Security: ต้องเป็น Admin หรือ Superadmin
+    if current_user.role not in [UserRole.admin, UserRole.superadmin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # ต้องมีร้านสังกัด
+    if not current_user.shop_id:
+        raise HTTPException(status_code=400, detail="User has no shop")
+
+    shop = db.query(Shop).filter(Shop.id == current_user.shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    # อัปเดตข้อมูล
+    if config_in.line_channel_token is not None:
+        shop.line_channel_token = config_in.line_channel_token
+        
+    if config_in.line_target_id is not None:
+        shop.line_target_id = config_in.line_target_id
+
+    db.commit()
+    db.refresh(shop)
+    
+    return {"status": "success", "message": "Shop configuration updated"}
 
 @router.post("/", response_model=ShopResponse)
 def create_shop(

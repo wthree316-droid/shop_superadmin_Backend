@@ -17,9 +17,16 @@ class ShopResponse(ShopBase):
     id: UUID
     is_active: bool
     created_at: datetime
+    line_channel_token: Optional[str] = None
+    line_target_id: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+# 2. [เพิ่มใหม่] Schema สำหรับรับค่าแก้ไขการตั้งค่า
+class ShopConfigUpdate(BaseModel):
+    line_channel_token: Optional[str] = None
+    line_target_id: Optional[str] = None
 
 # --- User Schemas ---
 class UserBase(BaseModel):

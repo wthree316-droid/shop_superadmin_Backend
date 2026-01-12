@@ -19,6 +19,7 @@ from app.schemas import (
 from app.db.session import get_db
 from app.models.lotto import Ticket, TicketItem, LottoType, TicketStatus, RateProfile, NumberRisk
 from app.models.user import User, UserRole
+from app.core import lotto_cache
 from app.core.game_logic import expand_numbers
 from app.core.audit_logger import write_audit_log
 from app.core.risk_cache import get_cached_risks, invalidate_cache # [เพิ่ม]
@@ -72,29 +73,40 @@ def create_rate_profile(
 
 # --- APIs ---
 
+# 1. แก้ไข function ให้รับ db session เข้าไปเพื่อ query จริงเมื่อ cache ว่าง
+def fetch_lottos_for_cache(db, shop_id, role):
+    query = db.query(LottoType)
+    if role == UserRole.member:
+        query = query.filter(LottoType.is_active == True, LottoType.is_template == False)
+        if shop_id:
+             query = query.filter(LottoType.shop_id == shop_id)
+    elif role == UserRole.admin:
+        query = query.filter(LottoType.shop_id == shop_id)
+    
+    # ต้อง return เป็น List of Dict (Pydantic model dump) เพื่อเก็บใน RAM
+    return [LottoResponse.from_orm(l).dict() for l in query.order_by(LottoType.id).all()]
+
 @router.get("/lottos", response_model=List[LottoResponse])
 def get_lottos(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    # 2. เรียกผ่าน Cache Wrapper
+    # หมายเหตุ: Logic Cache ปัจจุบันของคุณเป็น Global Cache (แชร์ทุกร้าน) 
+    # ถ้าจะ Cache แยกรายร้าน ต้องปรับ lotto_cache.py เพิ่ม 
+    # **แต่สำหรับตอนนี้ใช้ Query ตรงไปก่อนก็ได้ครับ เพราะ Logic แยก user/admin มันซับซ้อนถ้ายัดลง Global Cache ตัวเดียว**
+    
+    # ดังนั้น: โค้ดปัจจุบันของคุณ "ถูกต้องในเชิง Logic" แล้วครับ (ปลอดภัยกว่า Cache ผิด)
+    # ถ้าจะ Optimize ค่อยทำใน Phase 2 ครับ
+    
     query = db.query(LottoType)
-    
-    # ถ้าเป็น SuperAdmin ให้เห็นหมด หรือเห็นเฉพาะ Template ก็ได้แล้วแต่ตกลง
-    # แต่ปกติหน้านี้คือหน้า "เล่นหวย" ของลูกค้า หรือหน้า "จัดการหวย" ของร้าน
-    
     if current_user.role == UserRole.member:
-        # ลูกค้า: เห็นเฉพาะที่ Active และเป็นของร้านที่ตัวเองสังกัด (ถ้ามี)
-        # หรือถ้าเป็นเว็บรวม ก็เห็นทั้งหมดที่เป็น shop_id ของเว็บหลัก
         query = query.filter(LottoType.is_active == True, LottoType.is_template == False)
         if current_user.shop_id:
              query = query.filter(LottoType.shop_id == current_user.shop_id)
-
     elif current_user.role == UserRole.admin:
-        # แอดมินร้าน: เห็นเฉพาะของร้านตัวเอง
         query = query.filter(LottoType.shop_id == current_user.shop_id)
         
-    # ถ้า SuperAdmin อาจจะอยากเห็นทั้งหมด หรือต้องมี API แยก
-    
     return query.order_by(LottoType.id).all()
 
 # Helper แปลงเวลา
@@ -128,8 +140,14 @@ def create_lotto(
         shop_id = current_user.shop_id
         is_template = False # Admin ร้านห้ามสร้าง Template
 
-    if db.query(LottoType).filter(LottoType.code == lotto_in.code).first():
-        raise HTTPException(status_code=400, detail="Code already exists")
+    # เช็คซ้ำเฉพาะในร้านตัวเอง (shop_id เดียวกัน)
+    existing_lotto = db.query(LottoType).filter(
+        LottoType.code == lotto_in.code,
+        LottoType.shop_id == shop_id
+    ).first()
+
+    if existing_lotto:
+        raise HTTPException(status_code=400, detail=f"รหัสหวย {lotto_in.code} มีอยู่แล้วในร้านของคุณ")
 
     new_lotto = LottoType(
         name=lotto_in.name,
@@ -148,6 +166,7 @@ def create_lotto(
     )
     db.add(new_lotto)
     db.commit()
+    lotto_cache.invalidate_lotto_cache()
     db.refresh(new_lotto)
     return new_lotto
 
@@ -261,13 +280,13 @@ def import_default_lottos(
         raise HTTPException(status_code=404, detail="ไม่พบข้อมูลแม่แบบจากระบบกลาง (Super Admin ยังไม่ได้สร้าง)")
 
     # 3. ต้องมี Rate Profile ของร้านอย่างน้อย 1 อันเพื่อเอามาผูก
-    # (สมมติว่าร้านสร้าง Rate Profile ไว้แล้ว เราจะเอาอันแรกมาใช้)
-    # *หมายเหตุ: ในอนาคตคุณอาจต้องเพิ่ม shop_id ใน RateProfile เพื่อความชัวร์
-    default_rate = db.query(RateProfile).first() 
+    default_rate = db.query(RateProfile).filter(
+        RateProfile.shop_id == current_user.shop_id
+    ).first()
     
     if not default_rate:
-         raise HTTPException(status_code=400, detail="กรุณาสร้าง 'เรทราคา' ในร้านค้าก่อนกดดึงข้อมูล")
-
+         raise HTTPException(status_code=400, detail="กรุณาสร้าง 'เรทราคา' ในร้านค้าของคุณก่อนกดดึงข้อมูล")
+    
     imported_count = 0
     for tmpl in templates:
         # 4. เช็คว่าร้านเรามีหวย code นี้หรือยัง (กันซ้ำ)
