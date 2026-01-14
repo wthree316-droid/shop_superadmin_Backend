@@ -9,20 +9,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
-origins = [
-    "http://localhost:5173", # สำหรับพัฒนาในเครื่อง
-    "http://127.0.0.1:5173",
-    "https://shop-superadmin-system.vercel.app",
-    "https://shop-superadmin-system-jbany0v20-tanakrits-projects-7e4e9491.vercel.app",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # ระบุโดเมนที่อนุญาต
-    allow_credentials=True,
+    allow_origin_regex=r"https://(.*\.malawwei\.com|malawwei\.com)(:\d+)?",
+    
+    allow_credentials=True, # สำคัญมาก! ต้องเป็น True ถึงจะส่ง Token/Cookie ข้ามโดเมนได้
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"] # อนุญาตให้เข้าถึง Header ทั้งหมด
+    expose_headers=["*"]
 )
 
 app.include_router(api_router, prefix="/api/v1")
