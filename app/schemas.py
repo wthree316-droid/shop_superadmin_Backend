@@ -12,13 +12,17 @@ class ShopBase(BaseModel):
     subdomain: Optional[str] = None
 
 class ShopCreate(ShopBase):
-    pass
+    name: Optional[str] = None
+    code: Optional[str] = None
+    subdomain: Optional[str] = None
+    logo_url: Optional[str] = None
 
 class ShopUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
     subdomain: Optional[str] = None
     is_active: Optional[bool] = None
+    logo_url: Optional[str] = None
     
 class ShopResponse(ShopBase):
     id: UUID
@@ -34,6 +38,8 @@ class ShopResponse(ShopBase):
 class ShopConfigUpdate(BaseModel):
     line_channel_token: Optional[str] = None
     line_target_id: Optional[str] = None
+    logo_url: Optional[str] = None       
+    theme_color: Optional[str] = None
 
 # --- User Schemas ---
 class UserBase(BaseModel):
@@ -60,7 +66,8 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     credit_balance: Decimal
-    shop_name: Optional[str] = None  # เพื่อรองรับ API /me ที่ส่งชื่อร้านกลับมาด้วย
+    shop_name: Optional[str] = None  
+    shop_logo: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -62,7 +62,7 @@ def read_user_me(
     """
     # ดึงชื่อร้าน ถ้ามี shop ผูกอยู่
     shop_name = current_user.shop.name if current_user.shop else None
-    
+    shop_logo = current_user.shop.logo_url if current_user.shop else None
     # แปลง User Model เป็น Dict แล้วเพิ่ม shop_name เข้าไป
     return {
         "id": current_user.id,
@@ -73,7 +73,8 @@ def read_user_me(
         "is_active": current_user.is_active,
         "created_at": current_user.created_at,
         "credit_balance": current_user.credit_balance,
-        "shop_name": shop_name  # <--- ใส่ชื่อร้านตรงนี้
+        "shop_name": shop_name,
+        "shop_logo": shop_logo
     }
 
 # API ดึงรายชื่อ Admin ของร้าน (สำหรับ Superadmin)

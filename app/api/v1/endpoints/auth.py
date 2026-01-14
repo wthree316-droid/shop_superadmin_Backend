@@ -8,8 +8,9 @@ from app.core import security
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas import Token
 from app.core.audit_logger import write_audit_log
+from app.schemas import UserCreate, UserResponse, UserRole, Token
+from app.core.security import get_password_hash
 
 router = APIRouter()
 
@@ -124,3 +125,46 @@ def login_access_token(
         "access_token": token,
         "token_type": "bearer",
     }
+
+
+# ✅ [เพิ่มใหม่] API สมัครสมาชิก (Public Register)
+@router.post("/register", response_model=UserResponse)
+def register(
+    user_in: UserCreate,
+    db: Session = Depends(get_db)
+):
+    # 1. ตรวจสอบ Username ซ้ำ (เช็คทั่วทั้งระบบ)
+    if db.query(User).filter(User.username == user_in.username).first():
+        raise HTTPException(
+            status_code=400,
+            detail="ชื่อผู้ใช้นี้ถูกใช้งานแล้ว"
+        )
+
+    # 2. ตรวจสอบ Shop ID (สำคัญมากสำหรับระบบ Subdomain)
+    # Frontend ต้องส่ง shop_id มาด้วย (ได้จาก useShop -> API)
+    # ถ้าไม่มี shop_id แสดงว่าสมัครลอยๆ (อาจจะห้าม หรือให้เป็น member ไม่มีสังกัดก็ได้)
+    if not user_in.shop_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Shop ID is required for registration"
+        )
+
+    # 3. สร้าง User ใหม่
+    user = User(
+        username=user_in.username,
+        password_hash=get_password_hash(user_in.password),
+        full_name=user_in.full_name,
+        role=UserRole.member,  # สมัครเองต้องเป็น Member เท่านั้น
+        shop_id=user_in.shop_id, # ผูกกับร้านทันที
+        is_active=True,
+        credit_balance=0
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    # เพิ่ม shop_name ให้ response สวยงาม (ถ้าจำเป็น)
+    user.shop_name = user.shop.name if user.shop else None
+    
+    return user

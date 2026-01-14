@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from app.api import deps
 from app.db.session import get_db
 from app.models.user import User, UserRole
@@ -180,3 +181,27 @@ def read_reward_history(
             bottom_2=r.reward_data.get("bottom")  # Map ให้ตรง
         ) for r in results
     ]
+
+
+# ✅ [เพิ่ม API] ดึงผลรางวัลตามวันที่ (เพื่อเอาไปโชว์หน้า Admin)
+@router.get("/daily") 
+def get_daily_rewards(
+    date: str, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # Query ผลรางวัลทั้งหมดของวันที่ระบุ
+    results = db.query(LottoResult).filter(
+        func.date(LottoResult.created_at) == date
+    ).all()
+    
+    # Return เป็น Dict
+    return {
+        str(r.lotto_type_id): {
+            # ✅ แก้ไข: ดึงจาก reward_data.get("key")
+            "top_3": r.reward_data.get("top") if r.reward_data else "", 
+            "bottom_2": r.reward_data.get("bottom") if r.reward_data else "",
+            "created_at": r.created_at
+        } 
+        for r in results
+    }

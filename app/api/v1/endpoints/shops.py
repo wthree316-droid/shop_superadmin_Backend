@@ -8,6 +8,9 @@ from app.db.session import get_db
 from app.models.shop import Shop
 from app.models.user import User, UserRole
 from app.schemas import ShopCreate, ShopUpdate, ShopResponse, ShopConfigUpdate
+from sqlalchemy import func
+from datetime import date
+from app.models.lotto import Ticket, TicketItem, TicketStatus
 
 router = APIRouter()
 
@@ -46,6 +49,13 @@ def update_shop_config(
     shop = db.query(Shop).filter(Shop.id == current_user.shop_id).first()
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
+    
+    # ✅ [เพิ่ม] อัปเดตข้อมูล Branding
+    if config_in.logo_url is not None:
+        shop.logo_url = config_in.logo_url
+    
+    if config_in.theme_color is not None:
+        shop.theme_color = config_in.theme_color
 
     # อัปเดตข้อมูล
     if config_in.line_channel_token is not None:
@@ -175,7 +185,61 @@ def delete_shop_permanently(
         db.rollback()
         print(f"Delete Shop Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete shop. Data might be linked to other resources.")
+
+# 2. เพิ่ม API นี้ลงไป (ต่อท้ายไฟล์ หรือวางก่อน update_shop ก็ได้)
+@router.get("/stats/performance")
+def get_shops_performance(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # Security: เฉพาะ Superadmin เท่านั้น
+    if current_user.role != UserRole.superadmin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    today = date.today()
     
+    # ดึงร้านค้าทั้งหมด (เรียงตามชื่อ หรือวันที่สร้าง)
+    shops = db.query(Shop).order_by(Shop.created_at.desc()).all()
+    results = []
+
+    for shop in shops:
+        # A. ยอดขาย (Total Bet) เฉพาะวันนี้ และไม่รวมบิลยกเลิก
+        sales = db.query(func.sum(Ticket.total_amount))\
+            .filter(
+                Ticket.shop_id == shop.id, 
+                func.date(Ticket.created_at) == today,
+                Ticket.status != TicketStatus.CANCELLED
+            ).scalar() or 0
+
+        # B. ยอดจ่าย (Total Payout) เฉพาะวันนี้
+        # (ต้อง Join TicketItem เพื่อดูยอด winning_amount ของรายการที่ถูกรางวัล)
+        payout = db.query(func.sum(TicketItem.winning_amount))\
+            .join(Ticket)\
+            .filter(
+                Ticket.shop_id == shop.id,
+                func.date(Ticket.created_at) == today,
+                TicketItem.status == 'WIN',
+                Ticket.status != TicketStatus.CANCELLED
+            ).scalar() or 0
+
+        # C. คำนวณกำไร
+        profit = sales - payout
+
+        results.append({
+            "id": str(shop.id),
+            "name": shop.name,
+            "code": shop.code,
+            "logo_url": shop.logo_url,
+            "sales": sales,
+            "payout": payout,
+            "profit": profit,
+            "is_active": shop.is_active
+        })
+
+    # เรียงลำดับตาม "ยอดขาย" มาก -> น้อย (เพื่อให้เห็นร้านตัวท็อปก่อน)
+    results.sort(key=lambda x: x['sales'], reverse=True)
+    
+    return results
 
 @router.put("/{shop_id}", response_model=ShopResponse)
 def update_shop(
