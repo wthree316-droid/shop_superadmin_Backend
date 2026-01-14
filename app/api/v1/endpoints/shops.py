@@ -1,14 +1,32 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.api import deps
 from app.db.session import get_db
 from app.models.shop import Shop
 from app.models.user import User, UserRole
-from app.schemas import ShopCreate, ShopResponse, ShopConfigUpdate
+from app.schemas import ShopCreate, ShopUpdate, ShopResponse, ShopConfigUpdate
 
 router = APIRouter()
+
+@router.get("/config/{subdomain}")
+def get_shop_config(subdomain: str, db: Session = Depends(get_db)):
+    # 1. ค้นหาร้านจาก Subdomain
+    shop = db.query(Shop).filter(Shop.subdomain == subdomain).first()
+    
+    # 2. ถ้าไม่เจอ หรือ ร้านถูกปิด/ลบ (Soft Delete) -> ระเบิด 404
+    if not shop or not shop.is_active:
+        raise HTTPException(status_code=404, detail="Shop not found")
+        
+    # 3. ถ้าเจอ ส่ง ID และ Config กลับไป
+    return {
+        "id": shop.id,
+        "name": shop.name,
+        "logo_url": shop.logo_url,
+        "theme_color": shop.theme_color
+    }
 
 # [เพิ่มใหม่] API สำหรับ Admin ร้านค้า แก้ไขตั้งค่า LINE ของตัวเอง
 @router.put("/config")
@@ -54,10 +72,16 @@ def create_shop(
     # เช็ค Code ซ้ำ
     if db.query(Shop).filter(Shop.code == shop_in.code).first():
         raise HTTPException(status_code=400, detail="Shop code already exists")
+    
+    # 2.เช็ค Subdomain ซ้ำ (สำคัญมาก! ชื่อโดเมนซ้ำกันไม่ได้)
+    if shop_in.subdomain:
+        if db.query(Shop).filter(Shop.subdomain == shop_in.subdomain).first():
+            raise HTTPException(status_code=400, detail=f"Subdomain '{shop_in.subdomain}' มีคนใช้แล้ว")
 
     new_shop = Shop(
         name=shop_in.name,
         code=shop_in.code,
+        subdomain=shop_in.subdomain,
         is_active=True
     )
     db.add(new_shop)
@@ -151,3 +175,39 @@ def delete_shop_permanently(
         db.rollback()
         print(f"Delete Shop Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete shop. Data might be linked to other resources.")
+    
+
+@router.put("/{shop_id}", response_model=ShopResponse)
+def update_shop(
+    shop_id: UUID,
+    shop_in: ShopUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # 1. เช็คว่าเป็น Superadmin ไหม
+    if current_user.role != UserRole.superadmin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # 2. หาร้านที่จะแก้
+    shop = db.query(Shop).filter(Shop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    # 3. เช็คซ้ำ (กรณีเปลี่ยนรหัสร้าน หรือ Subdomain)
+    if shop_in.code and shop_in.code != shop.code:
+        if db.query(Shop).filter(Shop.code == shop_in.code).first():
+            raise HTTPException(status_code=400, detail="รหัสร้านนี้มีผู้ใช้แล้ว")
+            
+    if shop_in.subdomain and shop_in.subdomain != shop.subdomain:
+        if db.query(Shop).filter(Shop.subdomain == shop_in.subdomain).first():
+            raise HTTPException(status_code=400, detail="Subdomain นี้มีผู้ใช้แล้ว")
+
+    # 4. อัปเดตข้อมูล
+    update_data = shop_in.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(shop, field, value)
+
+    db.add(shop)
+    db.commit()
+    db.refresh(shop)
+    return shop

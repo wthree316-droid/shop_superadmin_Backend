@@ -9,10 +9,17 @@ from app.models.user import UserRole
 class ShopBase(BaseModel):
     name: str
     code: str
+    subdomain: Optional[str] = None
 
 class ShopCreate(ShopBase):
     pass
 
+class ShopUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    subdomain: Optional[str] = None
+    is_active: Optional[bool] = None
+    
 class ShopResponse(ShopBase):
     id: UUID
     is_active: bool
