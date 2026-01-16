@@ -13,7 +13,8 @@ from app.schemas import (
     TicketCreate, TicketResponse, 
     LottoCreate, LottoResponse,
     RateProfileCreate, RateProfileResponse,
-    NumberRiskCreate, NumberRiskResponse
+    NumberRiskCreate, NumberRiskResponse,
+    BulkRateRequest
     # ลบ RewardHistoryResponse ออกเพราะไม่ได้ใช้ในไฟล์นี้
 )
 from app.db.session import get_db
@@ -28,6 +29,7 @@ from supabase import create_client, Client
 from app.core.config import settings
 
 router = APIRouter()
+
 
 # เชื่อมต่อ Supabase
 try:
@@ -139,6 +141,43 @@ def create_lotto(
     lotto_cache.invalidate_lotto_cache()
     db.refresh(new_lotto)
     return new_lotto
+
+
+# [Corrected Bulk Update]
+@router.put("/lottos/bulk-rate-update")
+def bulk_update_lotto_rates(
+    body: BulkRateRequest, 
+    db: Session = Depends(get_db),
+    # ✅ เพิ่ม: ต้อง Login และเช็ค Role
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # 1. Security Check: ต้องเป็น Admin หรือ Superadmin เท่านั้น
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        # 2. เริ่มสร้าง Query
+        query = db.query(LottoType).filter(LottoType.is_template == False)
+
+        # 3. Scope Check: ถ้าเป็น Admin ร้าน ต้องแก้ได้แค่หวยในร้านตัวเองเท่านั้น
+        if current_user.role == UserRole.admin:
+            # สำคัญมาก! ถ้าไม่ใส่บรรทัดนี้ ร้าน A จะไปแก้หวยร้าน B พังหมด
+            query = query.filter(LottoType.shop_id == current_user.shop_id)
+
+        # 4. Execute Update
+        updated_count = query.update(
+            {LottoType.rate_profile_id: body.rate_profile_id},
+            synchronize_session=False
+        )
+        
+        db.commit()
+        return {"message": "Success", "updated_count": updated_count}
+
+    except Exception as e:
+        db.rollback()
+        # print error เพื่อ debug
+        print(f"Error bulk update: {e}") 
+        raise HTTPException(status_code=500, detail="เกิดข้อผิดพลาดในการอัปเดตข้อมูล")
 
 # [Update Lotto]
 @router.put("/lottos/{lotto_id}", response_model=LottoResponse)

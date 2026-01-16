@@ -303,3 +303,7 @@ class WithdrawResponse(WithdrawCreate):
     
     class Config:
         from_attributes = True
+
+# 1. สร้าง Schema สำหรับรับค่า (ไว้บนสุดของไฟล์ หรือไฟล์ schemas.py)
+class BulkRateRequest(BaseModel):
+    rate_profile_id: str
