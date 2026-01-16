@@ -396,15 +396,17 @@ def submit_ticket(
         raise HTTPException(status_code=400, detail="หวยปิดรับแล้ว (Market Closed)")
 
     total_amount = sum(item.amount for item in ticket_in.items)
-    
-    if current_user.credit_balance < total_amount:
+    user_db = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+
+    if user_db.credit_balance < total_amount:
         raise HTTPException(
             status_code=400, 
             detail=f"ยอดเงินไม่พอ (ขาด {total_amount - current_user.credit_balance:.2f} บาท)"
         )
+    
 
     try:
-        current_user.credit_balance -= total_amount
+        user_db.credit_balance -= total_amount
         db.add(current_user)
 
         new_ticket = Ticket(
@@ -485,26 +487,42 @@ def submit_ticket(
         raise HTTPException(status_code=500, detail=f"ระบบขัดข้อง: {str(e)}")
 
 # --- Stats & History ---
-
-@router.get("/stats/today")
+@router.get("/stats/daily")  # <-- 1. เปลี่ยนชื่อ endpoint ให้ general ขึ้น
 def get_daily_stats(
+    date_str: Optional[str] = None, # <-- 2. รับวันที่เข้ามา (Format: YYYY-MM-DD)
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # 1. ตั้งค่าเวลาเป็น UTC+7 (Thailand Time) เพื่อให้ Dashboard รีเซ็ตตอนเที่ยงคืนไทยเป๊ะๆ
-    thailand_now = datetime.utcnow() + timedelta(hours=7)
-    today = thailand_now.date()
-    
-    # 2. Query ยอดขาย (เฉพาะบิลที่ไม่ถูกยกเลิก)
+    # --- ส่วนจัดการวันที่ ---
+    if date_str:
+        # กรณีมีการเลือกวันที่มา: แปลง String เป็น Date Object
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    else:
+        # กรณีไม่เลือก: ใช้วันปัจจุบัน (UTC+7)
+        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+
+    # สร้างช่วงเวลา Start - End ของวันนั้น (เพื่อประสิทธิภาพ Query)
+    # เช่น 2023-10-25 00:00:00 ถึง 2023-10-25 23:59:59
+    start_of_day_thai = datetime.combine(target_date, time.min) # 00:00
+    end_of_day_thai = datetime.combine(target_date, time.max)   # 23:59
+
+    # 2. ลบ 7 ชั่วโมงเพื่อแปลงกลับเป็น UTC (สำหรับ Database)
+    start_utc = start_of_day_thai - timedelta(hours=7)
+    end_utc = end_of_day_thai - timedelta(hours=7)
+    # --- 3. Query ยอดขาย (ใช้ Range Filter เร็วกว่า func.date) ---
     query = db.query(
         func.sum(Ticket.total_amount).label("total_sales"),
         func.count(Ticket.id).label("total_tickets"),
     ).filter(
-        func.date(Ticket.created_at) == today,
-        Ticket.status != TicketStatus.CANCELLED  # <--- จุดสำคัญ: ไม่นับบิลที่ยกเลิก
+        Ticket.created_at >= start_utc,  # มากกว่าหรือเท่ากับ 00:00
+        Ticket.created_at <= end_utc,    # น้อยกว่าหรือเท่ากับ 23:59
+        Ticket.status != TicketStatus.CANCELLED
     )
     
     # กรองร้านค้า (ถ้าเป็น Admin ร้าน)
@@ -515,25 +533,25 @@ def get_daily_stats(
     total_sales = sales_result.total_sales or 0
     total_tickets = sales_result.total_tickets or 0
 
-    # 3. Query ยอดจ่ายรางวัล (เฉพาะบิลที่ถูกรางวัล และไม่ถูกยกเลิก)
+    # --- 4. Query ยอดจ่ายรางวัล ---
     payout_query = db.query(func.sum(TicketItem.winning_amount))\
         .join(Ticket)\
-        .filter(func.date(Ticket.created_at) == today)\
+        .filter(Ticket.created_at >= start_utc)\
+        .filter(Ticket.created_at <= end_utc)\
         .filter(TicketItem.status == 'WIN')\
-        .filter(Ticket.status != TicketStatus.CANCELLED) # กันเหนียว: เผื่อมีรายการค้างในบิลยกเลิก
+        .filter(Ticket.status != TicketStatus.CANCELLED)
         
     if current_user.role == UserRole.admin:
         payout_query = payout_query.filter(Ticket.shop_id == current_user.shop_id)
         
     total_payout = payout_query.scalar() or 0
 
-    # 4. ส่งค่ากลับไปแสดงผล
     return {
-        "date": today,
-        "total_sales": total_sales,     # ยอดขายจริง (ตัดยกเลิกแล้ว)
-        "total_tickets": total_tickets, # จำนวนบิลจริง (ตัดยกเลิกแล้ว)
-        "total_payout": total_payout,   # ยอดจ่ายจริง
-        "profit": total_sales - total_payout # กำไรสุทธิ
+        "date": target_date, # ส่งกลับไปด้วยว่านี่คือข้อมูลของวันไหน
+        "total_sales": total_sales,
+        "total_tickets": total_tickets,
+        "total_payout": total_payout,
+        "profit": total_sales - total_payout
     }
 
 @router.get("/history", response_model=List[TicketResponse])
@@ -743,24 +761,34 @@ def get_member_stats(
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    # 1. จัดการวันที่ (Timezone Safe)
     if date_str:
         try:
-            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            target_date_thai = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
-            target_date = date.today()
+            target_date_thai = (datetime.utcnow() + timedelta(hours=7)).date()
     else:
-        target_date = date.today()
+        target_date_thai = (datetime.utcnow() + timedelta(hours=7)).date()
 
+    # 2. แปลงเป็นช่วงเวลา UTC
+    start_utc = datetime.combine(target_date_thai, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(target_date_thai, time.max) - timedelta(hours=7)
+
+    # 3. Query (ไม่กรอง Role เพื่อให้เห็น Admin เล่นด้วย)
     query = db.query(Ticket).options(
         joinedload(Ticket.user), 
         joinedload(Ticket.items)
-    ).filter(func.date(Ticket.created_at) == target_date)
+    ).filter(
+        Ticket.created_at >= start_utc,
+        Ticket.created_at <= end_utc
+    )
 
     if current_user.role == UserRole.admin:
         query = query.filter(Ticket.shop_id == current_user.shop_id)
 
     tickets = query.all()
 
+    # 4. วนลูปสรุปยอด
     stats = {}
     for t in tickets:
         if not t.user: continue
@@ -771,6 +799,7 @@ def get_member_stats(
                 "user_id": uid,
                 "username": t.user.username,
                 "full_name": t.user.full_name or "-",
+                "role": t.user.role.value, # เพิ่ม Role ให้รู้
                 "total_bet": Decimal(0),
                 "total_win": Decimal(0),
                 "pending_amount": Decimal(0),

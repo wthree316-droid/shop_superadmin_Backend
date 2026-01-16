@@ -139,6 +139,7 @@ class RewardRequest(BaseModel):
     lotto_type_id: UUID
     top_3: str
     bottom_2: str
+    round_date: Optional[date] = None
     
     @field_validator('top_3')
     def validate_top(cls, v):

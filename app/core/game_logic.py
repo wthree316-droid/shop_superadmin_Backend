@@ -1,7 +1,7 @@
-from typing import List
-from decimal import Decimal, ROUND_HALF_UP 
+# app/core/game_logic.py
 
-# ลบ import itertools ออกได้เลย ไม่ได้ใช้แล้ว
+from typing import List, Union, Dict, Any
+from decimal import Decimal, ROUND_HALF_UP 
 
 def expand_numbers(number: str, bet_type: str) -> List[str]:
     """
@@ -15,7 +15,7 @@ def expand_numbers(number: str, bet_type: str) -> List[str]:
 
 def get_reward_rate(bet_type: str, rules: dict) -> Decimal:
     """
-    ดึงราคาจ่ายจาก Config ตรงๆ (เพราะ Frontend ส่ง Core Type มาแล้ว)
+    ดึงราคาจ่ายจาก Config (รองรับทั้งแบบเลขตัวเดียวและแบบ Object)
     """
     if not rules:
         return Decimal('0.00')
@@ -24,7 +24,19 @@ def get_reward_rate(bet_type: str, rules: dict) -> Decimal:
     if not rates:
         return Decimal('0.00')
         
-    # Frontend ส่งมาเป็น 2up, 3top, run_up อยู่แล้ว ดึงค่าได้เลย
-    raw_rate = rates.get(bet_type, 0)
+    # ดึงค่าดิบออกมาก่อน
+    raw_data = rates.get(bet_type, 0)
     
-    return Decimal(str(raw_rate)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    # เช็คว่าเป็น Dict (โครงสร้างใหม่) หรือไม่
+    if isinstance(raw_data, dict):
+        # ถ้าเป็น Dict ให้ดึง field 'pay'
+        val = raw_data.get('pay', 0)
+    else:
+        # ถ้าไม่ใช่ (เป็น int/str แบบเก่า) ก็ใช้ค่าเลย
+        val = raw_data
+    
+    # แปลงเป็น Decimal
+    try:
+        return Decimal(str(val)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except:
+        return Decimal('0.00')

@@ -28,20 +28,22 @@ def issue_reward(
     # 1. Security Check
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    
+    target_date = data.round_date if data.round_date else date.today()
 
     # 2. Check duplicate
     existing_result = db.query(LottoResult).filter(
         LottoResult.lotto_type_id == data.lotto_type_id,
-        LottoResult.round_date == date.today()
+        LottoResult.round_date == target_date
     ).first()
 
     if existing_result:
-        raise HTTPException(status_code=400, detail="Reward already issued.")
-
+        raise HTTPException(status_code=400, detail=f"ผลรางวัลวันที่ {target_date} ถูกออกไปแล้ว")
+    
     # Save Result (เก็บ key เป็น "top", "bottom")
     new_result = LottoResult(
         lotto_type_id=data.lotto_type_id,
-        round_date=date.today(),
+        round_date=target_date,
         reward_data={"top": data.top_3, "bottom": data.bottom_2}
     )
     db.add(new_result)
@@ -54,7 +56,8 @@ def issue_reward(
         .options(joinedload(Ticket.user))
         .filter(
             Ticket.lotto_type_id == data.lotto_type_id,
-            Ticket.status == TicketStatus.PENDING
+            Ticket.status == TicketStatus.PENDING,
+            func.date(Ticket.created_at) == target_date
         ).all()
     )
 
@@ -112,6 +115,7 @@ def issue_reward(
                 target_table="lotto_results",
                 details={
                     "lotto_id": str(data.lotto_type_id),
+                    "round_date": str(target_date),
                     "top3": data.top_3,
                     "bottom2": data.bottom_2,
                     "total_payout": float(total_payout),
@@ -126,7 +130,7 @@ def issue_reward(
 
         if shop and shop.line_channel_token and shop.line_target_id:
             msg = f"🏆 สรุปผลรางวัล\n" \
-                  f"งวดวันที่: {date.today()}\n" \
+                  f"งวดวันที่: {target_date}\n" \
                   f"เลขที่ออก: {data.top_3} | {data.bottom_2}\n" \
                   f"----------------\n" \
                   f"คนถูกรางวัล: {total_winners} ใบ\n" \
@@ -192,7 +196,7 @@ def get_daily_rewards(
 ):
     # Query ผลรางวัลทั้งหมดของวันที่ระบุ
     results = db.query(LottoResult).filter(
-        func.date(LottoResult.created_at) == date
+        LottoResult.round_date == date  # ✅ Use round_date, not created_at
     ).all()
     
     # Return เป็น Dict

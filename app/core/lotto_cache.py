@@ -1,15 +1,17 @@
-from typing import List, Optional
+# app/core/lotto_cache.py
+from typing import List, Optional, Dict
 import time
+from app.schemas import LottoResponse # ต้อง import Schema มาเพื่อแปลงข้อมูล
 
-# เก็บรายชื่อหวยทั้งหมด (List of Dictionaries/Schemas)
-_LOTTO_LIST_CACHE: Optional[List[dict]] = None
+# เก็บเป็น List of Dictionaries แทน ORM Objects
+_LOTTO_LIST_CACHE: Optional[List[Dict]] = None
 _LAST_UPDATED: float = 0
-CACHE_DURATION = 300  # 5 นาที (เผื่อระบบ Auto Refresh ไม่ทำงาน อย่างน้อย 5 นาทีก็อัปเดตเอง)
+CACHE_DURATION = 300  # 5 นาที
 
-def get_cached_lottos(db_fetch_callback) -> List[dict]:
+def get_cached_lottos(db_fetch_callback) -> List[Dict]:
     """
     ดึงรายการหวยจาก Cache
-    db_fetch_callback: ฟังก์ชันที่ใช้ดึงข้อมูลจาก DB จริงๆ (ถ้า Cache ว่าง)
+    db_fetch_callback: ฟังก์ชัน lambda ที่ query DB (ต้อง return List[LottoType])
     """
     global _LOTTO_LIST_CACHE, _LAST_UPDATED
     current_time = time.time()
@@ -18,22 +20,32 @@ def get_cached_lottos(db_fetch_callback) -> List[dict]:
     if _LOTTO_LIST_CACHE is None or (current_time - _LAST_UPDATED > CACHE_DURATION):
         print("🔄 Refreshing Lotto Menu Cache from DB")
         
-        # ดึงจาก DB
-        lottos_from_db = db_fetch_callback()
-        
-        # แปลงข้อมูลจาก ORM Model เป็น Dict หรือ Pydantic Schema เพื่อเก็บใน Ram
-        # (สมมติว่าใช้ Pydantic .model_dump() หรือแปลงมือ)
-        _LOTTO_LIST_CACHE = lottos_from_db
-        _LAST_UPDATED = current_time
+        try:
+            # 1. ดึงข้อมูลดิบจาก DB (เป็น SQLAlchemy Objects)
+            lottos_orm = db_fetch_callback()
+            
+            # 2. ✅ จุดสำคัญ: แปลง ORM -> Pydantic Model -> Dict ทันที
+            # เพื่อตัดขาดจาก DB Session ป้องกัน DetachedInstanceError
+            valid_lottos = []
+            for lotto in lottos_orm:
+                # แปลงผ่าน Schema เพื่อจัดการเรื่อง datetime/uuid ให้อัตโนมัติ
+                lotto_dict = LottoResponse.model_validate(lotto).model_dump()
+                valid_lottos.append(lotto_dict)
+
+            _LOTTO_LIST_CACHE = valid_lottos
+            _LAST_UPDATED = current_time
+            
+        except Exception as e:
+            print(f"⚠️ Cache Error: {e}")
+            # ถ้าแปลงไม่ผ่าน ให้คืนค่าว่างไปก่อน ดีกว่าระบบล่ม
+            if _LOTTO_LIST_CACHE is None:
+                return []
         
     return _LOTTO_LIST_CACHE
 
 def invalidate_lotto_cache():
     """
-    เรียกใช้เมื่อ Admin กด:
-    1. เพิ่มหวยใหม่
-    2. แก้ไขเวลา/รูปภาพ
-    3. เปลี่ยนสถานะ Active/Inactive
+    เรียกใช้เมื่อ Admin กดเพิ่ม/ลบ/แก้ไขหวย
     """
     global _LOTTO_LIST_CACHE
     _LOTTO_LIST_CACHE = None
