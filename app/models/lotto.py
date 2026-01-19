@@ -113,11 +113,20 @@ class NumberRisk(Base):
     __tablename__ = "number_risks"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     lotto_type_id = Column(UUID(as_uuid=True), ForeignKey("lotto_types.id"), nullable=False)
-    
     number = Column(String, nullable=False)  # เลขที่อั้น เช่น "59", "123"
     risk_type = Column(String, nullable=False) # CLOSE=ปิดรับ, HALF=จ่ายครึ่ง
-    
+    specific_bet_type: str = Column(String, default="ALL") # ค่าที่เป็นไปได้: 'ALL', '2up', '2down', '3top', '3tod', 'run_up', 'run_down'
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationship กลับไปหาหวย (Optional)
     lotto = relationship("LottoType")
+
+class LottoCategory(Base):
+    __tablename__ = "lotto_categories"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    label = Column(String, nullable=False) # ชื่อหมวด เช่น "หวยหุ้นวีไอพี"
+    color = Column(String, default="bg-gray-100 text-gray-700") # สีปุ่ม (Tailwind Class)
+    shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True) # ผูกกับร้านค้า
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    

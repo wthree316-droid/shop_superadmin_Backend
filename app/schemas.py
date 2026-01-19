@@ -90,7 +90,7 @@ class BetItemCreate(BaseModel):
     @field_validator('amount')
     @classmethod
     def validate_amount(cls, v):
-        if v <= 1: raise ValueError("ยอดแทงต้องมากกว่า 1")
+        if v <= 0: raise ValueError("ยอดแทงต้องมากกว่า 1")
         return v
 
 class BetItemResponse(BaseModel):
@@ -131,6 +131,7 @@ class TicketResponse(BaseModel):
     user: Optional[TicketUser] = None
     items: List[BetItemResponse] = []
     lotto_type: Optional[LottoResponseShort] = None
+    lotto_type_id: UUID
     class Config:
         from_attributes = True
 
@@ -215,7 +216,8 @@ class LottoResponse(LottoCreate):
     open_time: Optional[time] = None
     close_time: Optional[time] = None
     result_time: Optional[time] = None
-    
+    shop_id: Optional[UUID] = None
+
     class Config:
         from_attributes = True
 
@@ -224,6 +226,7 @@ class NumberRiskCreate(BaseModel):
     lotto_type_id: UUID
     number: str
     risk_type: str # "CLOSE" หรือ "HALF"
+    specific_bet_type: str = "ALL"
 
 class NumberRiskResponse(NumberRiskCreate):
     id: UUID
@@ -308,3 +311,14 @@ class WithdrawResponse(WithdrawCreate):
 # 1. สร้าง Schema สำหรับรับค่า (ไว้บนสุดของไฟล์ หรือไฟล์ schemas.py)
 class BulkRateRequest(BaseModel):
     rate_profile_id: str
+
+# --- Category Schemas ---
+class CategoryCreate(BaseModel):
+    label: str
+    color: Optional[str] = "bg-gray-100 text-gray-700"
+
+class CategoryResponse(CategoryCreate):
+    id: UUID
+    shop_id: Optional[UUID] = None
+    class Config:
+        from_attributes = True

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from sqlalchemy import func, case, desc, extract
 from pydantic import BaseModel
+from app.core import lotto_cache
 
 from app.api import deps
 # Import Schemas
@@ -14,11 +15,11 @@ from app.schemas import (
     LottoCreate, LottoResponse,
     RateProfileCreate, RateProfileResponse,
     NumberRiskCreate, NumberRiskResponse,
-    BulkRateRequest
+    BulkRateRequest, CategoryCreate, CategoryResponse
     # ลบ RewardHistoryResponse ออกเพราะไม่ได้ใช้ในไฟล์นี้
 )
 from app.db.session import get_db
-from app.models.lotto import Ticket, TicketItem, LottoType, TicketStatus, RateProfile, NumberRisk
+from app.models.lotto import Ticket, TicketItem, LottoType, TicketStatus, RateProfile, NumberRisk, LottoCategory
 from app.models.user import User, UserRole
 from app.core import lotto_cache
 from app.core.game_logic import expand_numbers
@@ -71,21 +72,132 @@ def create_rate_profile(
     db.refresh(new_profile)
     return new_profile
 
-# 2. API ดึงรายการหวย (Lottos)
+@router.get("/categories", response_model=List[CategoryResponse])
+def get_categories(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # ดึงหมวดหมู่ของร้านตัวเอง + หมวดหมู่กลาง (shop_id=None)
+    query = db.query(LottoCategory).filter(
+        (LottoCategory.shop_id == current_user.shop_id) | (LottoCategory.shop_id == None)
+    )
+    return query.all()
+
+@router.post("/categories", response_model=CategoryResponse)
+def create_category(
+    cat_in: CategoryCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    new_cat = LottoCategory(
+        label=cat_in.label,
+        color=cat_in.color,
+        shop_id=current_user.shop_id
+    )
+    db.add(new_cat)
+    db.commit()
+    db.refresh(new_cat)
+    return new_cat
+
+# -------------------------------------------------------------------
+# 1. ปรับแก้ API GET /lottos ให้ใช้ Cache
+# -------------------------------------------------------------------
 @router.get("/lottos", response_model=List[LottoResponse])
 def get_lottos(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    query = db.query(LottoType)
-    if current_user.role == UserRole.member:
-        query = query.filter(LottoType.is_active == True, LottoType.is_template == False)
-        if current_user.shop_id:
-             query = query.filter(LottoType.shop_id == current_user.shop_id)
-    elif current_user.role == UserRole.admin:
-        query = query.filter(LottoType.shop_id == current_user.shop_id)
+    # 1. กำหนดฟังก์ชันสำหรับดึงข้อมูลสด (ถ้า Cache ว่าง)
+    def fetch_all_lottos():
+        return db.query(LottoType).order_by(LottoType.id).all()
+
+    # 2. เรียกข้อมูลจาก Cache (จะได้ List ของ Dict)
+    all_lottos = lotto_cache.get_cached_lottos(fetch_all_lottos)
+
+    # 3. กรองข้อมูล (Filter) ด้วย Python (เพราะข้อมูลอยู่ในแรมแล้ว เร็วมาก)
+    filtered_lottos = []
+    
+    for lotto in all_lottos:
+        # แปลง UUID ใน dict เป็น string เพื่อเทียบกับ current_user.shop_id (ที่เป็น UUID object)
+        lotto_shop_id = str(lotto.get('shop_id')) if lotto.get('shop_id') else None
+        user_shop_id = str(current_user.shop_id) if current_user.shop_id else None
+
+        if current_user.role == UserRole.member:
+            # สมาชิก: ต้อง Active + ไม่ใช่ Template + ตรงกับร้านตัวเอง
+            if lotto.get('is_active') is True and lotto.get('is_template') is False:
+                if user_shop_id:
+                    if lotto_shop_id == user_shop_id:
+                        filtered_lottos.append(lotto)
+                else:
+                    # ถ้าไม่มีสังกัดร้าน (กรณีระบบเปิด)
+                    filtered_lottos.append(lotto)
+                    
+        elif current_user.role == UserRole.admin:
+            # แอดมิน: ดูเฉพาะของร้านตัวเอง
+            if lotto_shop_id == user_shop_id:
+                filtered_lottos.append(lotto)
         
-    return query.order_by(LottoType.id).all()
+        else:
+            # Superadmin: ดูได้หมด
+            filtered_lottos.append(lotto)
+            
+    return filtered_lottos
+
+
+# 1. API แก้ไขหมวดหมู่
+@router.put("/categories/{cat_id}", response_model=CategoryResponse)
+def update_category(
+    cat_id: UUID,
+    cat_in: CategoryCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    category = db.query(LottoCategory).filter(LottoCategory.id == cat_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    
+    # ถ้าเป็น Admin ร้าน ห้ามแก้ของร้านอื่น (กรณีระบบ Multi-tenant)
+    if current_user.role == UserRole.admin and category.shop_id != current_user.shop_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    category.label = cat_in.label
+    category.color = cat_in.color
+    
+    db.commit()
+    db.refresh(category)
+    return category
+
+# 2. API ลบหมวดหมู่
+@router.delete("/categories/{cat_id}")
+def delete_category(
+    cat_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    category = db.query(LottoCategory).filter(LottoCategory.id == cat_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    if current_user.role == UserRole.admin and category.shop_id != current_user.shop_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # (Optional) เช็คก่อนว่ามีหวยใช้อยู่ไหม ถ้ามีห้ามลบ
+    used_count = db.query(LottoType).filter(LottoType.category == str(cat_id)).count()
+    if used_count > 0:
+        raise HTTPException(status_code=400, detail=f"ไม่สามารถลบได้ มีหวย {used_count} รายการใช้งานอยู่")
+
+    db.delete(category)
+    db.commit()
+    return {"status": "success", "message": "Category deleted"}
 
 # Helper แปลงเวลา
 def parse_time(t_str: str):
@@ -215,6 +327,7 @@ def update_lotto(
     lotto.result_time = parse_time(lotto_in.result_time)
     
     db.commit()
+    lotto_cache.invalidate_lotto_cache()
     db.refresh(lotto)
     return lotto
 
@@ -251,6 +364,7 @@ def delete_lotto(
     try:
         db.delete(lotto)
         db.commit()
+        lotto_cache.invalidate_lotto_cache()
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail="ไม่สามารถลบหวยนี้ได้")
@@ -334,7 +448,8 @@ def add_risk(
 
     existing = db.query(NumberRisk).filter(
         NumberRisk.lotto_type_id == risk_in.lotto_type_id,
-        NumberRisk.number == risk_in.number
+        NumberRisk.number == risk_in.number,
+        NumberRisk.specific_bet_type == risk_in.specific_bet_type
     ).first()
 
     if existing:
@@ -346,7 +461,8 @@ def add_risk(
     new_risk = NumberRisk(
         lotto_type_id=risk_in.lotto_type_id,
         number=risk_in.number,
-        risk_type=risk_in.risk_type
+        risk_type=risk_in.risk_type,
+        specific_bet_type=risk_in.specific_bet_type
     )
     db.add(new_risk)
     db.commit()
@@ -379,6 +495,7 @@ def submit_ticket(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    # 1. จัดการเรื่อง Shop ID (ใครเป็นคนส่งโพย)
     target_shop_id = current_user.shop_id
     if current_user.role == UserRole.superadmin:
         if ticket_in.shop_id:
@@ -386,15 +503,16 @@ def submit_ticket(
     elif current_user.role == UserRole.admin:
         target_shop_id = current_user.shop_id
 
+    # 2. ตรวจสอบข้อมูลหวย และเวลาปิดรับ
     lotto = db.query(LottoType).filter(LottoType.id == ticket_in.lotto_type_id).first()
     if not lotto:
         raise HTTPException(status_code=404, detail="Lotto type not found")
     
-    # เช็คเวลาปิดรับ
     now_time = datetime.now().time()
     if lotto.close_time and now_time > lotto.close_time:
         raise HTTPException(status_code=400, detail="หวยปิดรับแล้ว (Market Closed)")
 
+    # 3. ตรวจสอบยอดเงินคงเหลือ
     total_amount = sum(item.amount for item in ticket_in.items)
     user_db = db.query(User).filter(User.id == current_user.id).with_for_update().first()
 
@@ -403,9 +521,9 @@ def submit_ticket(
             status_code=400, 
             detail=f"ยอดเงินไม่พอ (ขาด {total_amount - current_user.credit_balance:.2f} บาท)"
         )
-    
 
     try:
+        # ตัดเงิน และสร้าง Header ของ Ticket
         user_db.credit_balance -= total_amount
         db.add(current_user)
 
@@ -418,24 +536,35 @@ def submit_ticket(
             status=TicketStatus.PENDING
         )
         db.add(new_ticket)
-        db.flush()
+        db.flush() # flush เพื่อให้ new_ticket.id ถูกสร้าง
 
-        def fetch_risks_from_db(lotto_id_str):
-            return db.query(NumberRisk).filter(NumberRisk.lotto_type_id == lotto_id_str).all()
+        # -----------------------------------------------------------
+        # 🔥 จุดแก้ไขสำคัญ: สร้าง Risk Lookup Map แบบละเอียด
+        # -----------------------------------------------------------
+        # ดึงข้อมูล Risk ทั้งหมดของหวยนี้ (แนะนำให้ดึงสดจาก DB ก่อนเพื่อความชัวร์เรื่อง Type)
+        # (ถ้าจะใช้ Cache ต้องแก้ไฟล์ risk_cache.py ให้เก็บ structure ใหม่ก่อน)
+        risk_entries = db.query(NumberRisk).filter(NumberRisk.lotto_type_id == ticket_in.lotto_type_id).all()
+        
+        # สร้าง Dictionary เพื่อการค้นหาที่รวดเร็ว
+        # Key จะหน้าตาแบบนี้: "12:2up" หรือ "12:ALL"
+        risk_lookup = {}
+        for r in risk_entries:
+            key = f"{r.number}:{r.specific_bet_type}" # เช่น "59:2up"
+            risk_lookup[key] = r.risk_type
 
-        risk_map = get_cached_risks(str(ticket_in.lotto_type_id), fetch_risks_from_db)
-
+        # ดึง Rate Profile มาเตรียมไว้
         rates = {}
         if lotto.rate_profile:
             rates = lotto.rate_profile.rates 
         
+        # 4. วนลูปสร้างรายการย่อย (Items)
         for item_in in ticket_in.items:
             expanded_numbers = expand_numbers(item_in.number, item_in.bet_type)
             if not expanded_numbers:
                 raise HTTPException(status_code=400, detail=f"รูปแบบตัวเลขไม่ถูกต้อง: {item_in.number}")
 
+            # ดึงการตั้งค่าเรท (Min/Max/Pay)
             rate_config = rates.get(item_in.bet_type, {})
-            
             if isinstance(rate_config, (int, float, str, Decimal)):
                 pay_rate = Decimal(str(rate_config))
                 min_bet = Decimal("1")
@@ -445,7 +574,6 @@ def submit_ticket(
                 min_bet = Decimal(str(rate_config.get('min', 1)))
                 max_bet = Decimal(str(rate_config.get('max', 0)))
 
-            # ✅ [แก้ไข] ป้องกันการจ่ายผิดราคา (สำคัญมาก)
             if pay_rate == 0:
                  raise HTTPException(status_code=400, detail=f"ไม่พบอัตราจ่ายสำหรับประเภท: {item_in.bet_type}")
 
@@ -455,14 +583,38 @@ def submit_ticket(
             if max_bet > 0 and item_in.amount > max_bet:
                 raise HTTPException(status_code=400, detail=f"แทงสูงสุด {max_bet:,.0f} บาท ({item_in.bet_type})")
 
+            # 5. ตรวจสอบเลขแต่ละตัว (Expanded Numbers)
             for num in expanded_numbers:
                 final_rate = pay_rate
-                if num in risk_map:
-                    if risk_map[num] == "CLOSE":
-                        raise HTTPException(status_code=400, detail=f"เลข {num} ปิดรับแล้ว")
-                    elif risk_map[num] == "HALF":
-                        final_rate = pay_rate / 2
+                risk_status = None
 
+                # 🔥 ตรวจสอบความเสี่ยง (Logic ใหม่)
+                # 1. เช็คแบบเจาะจงประเภทก่อน (เช่น 12 ประเภท 2up)
+                specific_key = f"{num}:{item_in.bet_type}"
+                if specific_key in risk_lookup:
+                    risk_status = risk_lookup[specific_key]
+                
+                # 2. ถ้าไม่เจอเจาะจง ให้เช็คแบบเหมาหมด (ALL)
+                else:
+                    general_key = f"{num}:ALL"
+                    if general_key in risk_lookup:
+                        risk_status = risk_lookup[general_key]
+
+                # ดำเนินการตามสถานะที่เจอ
+                if risk_status == "CLOSE":
+                    # แปลงชื่อประเภทเป็นภาษาไทยให้ดูง่ายตอนแจ้งเตือน
+                    type_th = {
+                        '2up': '2ตัวบน', '2down': '2ตัวล่าง', 
+                        '3top': '3ตัวบน', '3tod': '3ตัวโต๊ด',
+                        'run_up': 'วิ่งบน', 'run_down': 'วิ่งล่าง'
+                    }.get(item_in.bet_type, item_in.bet_type)
+                    
+                    raise HTTPException(status_code=400, detail=f"เลข {num} ({type_th}) ปิดรับแล้ว")
+                
+                elif risk_status == "HALF":
+                    final_rate = pay_rate / 2
+
+                # บันทึกลง DB
                 t_item = TicketItem(
                     ticket_id=new_ticket.id,
                     number=num,
@@ -481,7 +633,6 @@ def submit_ticket(
     except Exception as e:
         db.rollback()
         print(f"Error submit ticket: {e}")
-        # ส่ง Error เดิมออกไป ถ้าเป็น HTTPException อยู่แล้ว
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"ระบบขัดข้อง: {str(e)}")
