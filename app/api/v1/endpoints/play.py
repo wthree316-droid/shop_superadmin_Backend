@@ -826,6 +826,9 @@ def get_shop_tickets(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
     if not current_user.shop_id:
          raise HTTPException(status_code=400, detail="No shop assigned")
 
