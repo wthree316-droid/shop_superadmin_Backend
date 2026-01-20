@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, DateTime, Time, JSON, Text, Date, UniqueConstraint
+from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, DateTime, Time, JSON, Text, Date, UniqueConstraint, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -128,5 +128,5 @@ class LottoCategory(Base):
     color = Column(String, default="bg-gray-100 text-gray-700") # สีปุ่ม (Tailwind Class)
     shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True) # ผูกกับร้านค้า
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
+    order_index = Column(Integer, default=999)
     

@@ -30,7 +30,7 @@ class ShopResponse(ShopBase):
     created_at: datetime
     line_channel_token: Optional[str] = None
     line_target_id: Optional[str] = None
-
+    theme_color: Optional[str] = "#2563EB"
     class Config:
         from_attributes = True
 
@@ -316,6 +316,7 @@ class BulkRateRequest(BaseModel):
 class CategoryCreate(BaseModel):
     label: str
     color: Optional[str] = "bg-gray-100 text-gray-700"
+    order_index: Optional[int] = 999
 
 class CategoryResponse(CategoryCreate):
     id: UUID

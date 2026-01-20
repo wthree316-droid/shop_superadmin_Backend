@@ -11,6 +11,7 @@ from app.schemas import ShopCreate, ShopUpdate, ShopResponse, ShopConfigUpdate
 from sqlalchemy import func
 from datetime import date
 from app.models.lotto import Ticket, TicketItem, TicketStatus
+from app.models.lotto import LottoCategory
 
 router = APIRouter()
 
@@ -92,9 +93,31 @@ def create_shop(
         name=shop_in.name,
         code=shop_in.code,
         subdomain=shop_in.subdomain,
-        is_active=True
+        is_active=True,
+        theme_color="#2563EB"
     )
     db.add(new_shop)
+    db.flush() # flush เพื่อให้ new_shop.id ถูกสร้างก่อน (ยังไม่ commit)
+
+    # 2. ✅ [เพิ่มตรงนี้] สร้างหมวดหมู่พื้นฐานให้ร้านใหม่ทันที
+    default_cats = [
+        {"label": "หวยรัฐบาลไทย", "color": "#EF4444"},      # แดง
+        {"label": "หวยฮานอย", "color": "#F59E0B"}, # ส้ม
+        {"label": "หวยลาว", "color": "#10B981"},            # เขียว
+        {"label": "หวยหุ้น", "color": "#EC4899"}, # ชมพู
+        {"label": "หวยหุ้นVIP", "color": "#8B5CF6"},    # ม่วง
+        {"label": "หวยดาวโจนส์", "color": "#F43F5E"},   # แดงเข้ม
+        {"label": "หวยอื่นๆ", "color": "#3B82F6"},           # น้ำเงิน
+
+    ]
+
+    for cat in default_cats:
+        new_cat = LottoCategory(
+            label=cat["label"],
+            color=cat["color"],
+            shop_id=new_shop.id # ผูกกับร้านที่เพิ่งสร้าง
+        )
+        db.add(new_cat)
     db.commit()
     db.refresh(new_shop)
     return new_shop

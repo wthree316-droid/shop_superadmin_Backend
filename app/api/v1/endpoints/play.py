@@ -4,7 +4,7 @@ from datetime import datetime, time, date, timedelta
 from uuid import UUID
 from sqlalchemy.orm import Session, joinedload
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
-from sqlalchemy import func, case, desc, extract
+from sqlalchemy import func, case, desc, extract, String
 from pydantic import BaseModel
 from app.core import lotto_cache
 
@@ -31,6 +31,15 @@ from app.core.config import settings
 
 router = APIRouter()
 
+DEFAULT_CATEGORIES_CONFIG = [
+    {"label": "หวยรัฐบาลไทย", "color": "#EF4444"},      # แดง
+    {"label": "หวยฮานอย", "color": "#F59E0B"}, # ส้ม
+    {"label": "หวยลาว", "color": "#10B981"},            # เขียว
+    {"label": "หวยหุ้น", "color": "#EC4899"}, # ชมพู
+    {"label": "หวยหุ้นVIP", "color": "#8B5CF6"},    # ม่วง
+    {"label": "หวยดาวโจนส์", "color": "#F43F5E"},   # แดงเข้ม
+    {"label": "หวยอื่นๆ", "color": "#3B82F6"},
+]
 
 # เชื่อมต่อ Supabase
 try:
@@ -77,11 +86,53 @@ def get_categories(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # ดึงหมวดหมู่ของร้านตัวเอง + หมวดหมู่กลาง (shop_id=None)
     query = db.query(LottoCategory).filter(
         (LottoCategory.shop_id == current_user.shop_id) | (LottoCategory.shop_id == None)
     )
-    return query.all()
+    # ✅ เพิ่ม .order_by(...) เพื่อเรียงลำดับ
+    return query.order_by(LottoCategory.order_index.asc()).all()
+
+
+@router.post("/categories/init_defaults")
+def init_default_categories(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    if not current_user.shop_id:
+        raise HTTPException(status_code=400, detail="User has no shop")
+
+    # นับว่ามีหมวดหมู่หรือยัง
+    existing_count = db.query(LottoCategory).filter(
+        LottoCategory.shop_id == current_user.shop_id
+    ).count()
+
+    added_count = 0
+    for default_cat in DEFAULT_CATEGORIES_CONFIG:
+        # เช็คชื่อซ้ำในร้าน
+        exists = db.query(LottoCategory).filter(
+            LottoCategory.shop_id == current_user.shop_id,
+            LottoCategory.label == default_cat["label"]
+        ).first()
+
+        if not exists:
+            new_cat = LottoCategory(
+                label=default_cat["label"],
+                color=default_cat["color"],
+                shop_id=current_user.shop_id
+            )
+            db.add(new_cat)
+            added_count += 1
+    
+    db.commit()
+    
+    msg = f"เพิ่มหมวดหมู่สำเร็จ {added_count} รายการ"
+    if existing_count > 0 and added_count == 0:
+        msg = "ร้านค้ามีหมวดหมู่ครบอยู่แล้ว"
+
+    return {"message": msg, "added": added_count}
 
 @router.post("/categories", response_model=CategoryResponse)
 def create_category(
@@ -95,7 +146,8 @@ def create_category(
     new_cat = LottoCategory(
         label=cat_in.label,
         color=cat_in.color,
-        shop_id=current_user.shop_id
+        shop_id=current_user.shop_id,
+        order_index=getattr(cat_in, 'order_index', 999)
     )
     db.add(new_cat)
     db.commit()
@@ -162,13 +214,20 @@ def update_category(
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
     
-    # ถ้าเป็น Admin ร้าน ห้ามแก้ของร้านอื่น (กรณีระบบ Multi-tenant)
-    if current_user.role == UserRole.admin and category.shop_id != current_user.shop_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # ✅ แก้ไข Logic การเช็คสิทธิ์ (เดิม: ห้ามแก้ถ้าไม่ใช่ของตัวเอง)
+    if current_user.role == UserRole.admin:
+        # ถ้าหมวดหมู่นี้ "มีเจ้าของ" และ "ไม่ใช่ร้านเรา" -> ห้ามแก้
+        if category.shop_id is not None and category.shop_id != current_user.shop_id:
+            raise HTTPException(status_code=403, detail="Access denied: คุณแก้ไขได้เฉพาะหมวดหมู่ของร้านตัวเองเท่านั้น")
+        
+        # (ถ้า category.shop_id เป็น None คือหมวดกลาง ยอมให้แก้ได้ตาม Logic ใหม่นี้)
 
     category.label = cat_in.label
     category.color = cat_in.color
-    
+
+    if hasattr(cat_in, 'order_index'):
+        category.order_index = cat_in.order_index
+        
     db.commit()
     db.refresh(category)
     return category
@@ -435,7 +494,22 @@ def get_risks(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    return db.query(NumberRisk).filter(NumberRisk.lotto_type_id == lotto_id).all()
+    today_thai = (datetime.utcnow() + timedelta(hours=7)).date()
+    start_utc = datetime.combine(today_thai, time.min) - timedelta(hours=7)
+
+    # ✅ 2. [เพิ่มส่วนนี้] ลบเลขอั้น "เก่ากว่าวันนี้" ทิ้งทันที (Hard Delete)
+    # วิธีนี้จะทำให้ Database สะอาดอยู่เสมอ ไม่ต้องเก็บขยะของเมื่อวานไว้
+    db.query(NumberRisk).filter(
+        NumberRisk.lotto_type_id == lotto_id,
+        NumberRisk.created_at < start_utc # เลือกตัวที่เก่ากว่า 00:00 น. ของวันนี้
+    ).delete(synchronize_session=False)
+    
+    db.commit() # ยืนยันการลบ
+
+    # 3. ดึงข้อมูลที่เหลือ (ซึ่งจะเป็นของวันนี้ทั้งหมดแล้ว) ส่งกลับไป
+    return db.query(NumberRisk).filter(
+        NumberRisk.lotto_type_id == lotto_id
+    ).all()
 
 @router.post("/risks", response_model=NumberRiskResponse)
 def add_risk(
@@ -710,29 +784,62 @@ def read_history(
     skip: int = 0,
     limit: int = 100,
     lotto_type_id: Optional[UUID] = None,
+    date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    # กำหนดวันที่เป้าหมาย (ถ้าไม่ส่งมา = วันนี้)
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+    else:
+        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+
+    # แปลงเป็นช่วงเวลา UTC สำหรับ Query
+    start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
+
     query = db.query(Ticket).options(
         joinedload(Ticket.items),
         joinedload(Ticket.lotto_type)
-    ).filter(Ticket.user_id == current_user.id)
+    ).filter(
+        Ticket.user_id == current_user.id,
+        Ticket.created_at >= start_utc, # ✅ กรองตามวันที่
+        Ticket.created_at <= end_utc
+    )
 
     if lotto_type_id:
         query = query.filter(Ticket.lotto_type_id == lotto_type_id)
 
+    # เรียงลำดับจาก "สร้างล่าสุด" ไปหา "เก่าสุด"
     tickets = query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
     return tickets
 
+# 2. แก้ไข API ประวัติร้านค้า (Admin)
 @router.get("/shop_history", response_model=List[TicketResponse])
 def get_shop_tickets(
     skip: int = 0,
     limit: int = 50,
+    date: Optional[str] = None, # ✅ เพิ่มรับค่าวันที่
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     if not current_user.shop_id:
          raise HTTPException(status_code=400, detail="No shop assigned")
+
+    # กำหนดวันที่เป้าหมาย
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+    else:
+        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+
+    start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
 
     tickets = (
         db.query(Ticket)
@@ -740,7 +847,11 @@ def get_shop_tickets(
             joinedload(Ticket.user),
             joinedload(Ticket.lotto_type)      
         )
-        .filter(Ticket.shop_id == current_user.shop_id)
+        .filter(
+            Ticket.shop_id == current_user.shop_id,
+            Ticket.created_at >= start_utc, # ✅ กรองตามวันที่
+            Ticket.created_at <= end_utc
+        )
         .order_by(Ticket.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -1000,19 +1111,22 @@ def delete_rate_profile(
     db.commit()
     return {"status": "success", "message": "Deleted successfully"}
 
-# ดึงรายละเอียดหวย 1 รายการ
-# [Note] ถ้าต้องการ Type Strict แนะนำให้เพิ่ม LottoDetailResponse ใน schemas.py
-# แต่ตอนนี้ใช้ response_model=None (คืนค่า Dict) ไปก่อน เพื่อไม่ต้องแก้ไฟล์อื่น
 @router.get("/lottos/{lotto_id}", response_model=None)
 def get_lotto_detail(
     lotto_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    lotto = db.query(LottoType).options(joinedload(LottoType.rate_profile)).filter(LottoType.id == lotto_id).first()
+    # 1. ดึงข้อมูลหวย + ร้านค้า (Joined Load)
+    lotto = db.query(LottoType).options(
+        joinedload(LottoType.rate_profile),
+        joinedload(LottoType.shop)
+    ).filter(LottoType.id == lotto_id).first()
+
     if not lotto:
         raise HTTPException(status_code=404, detail="Lotto not found")
 
+    # Security Check
     if current_user.role == UserRole.admin and lotto.shop_id != current_user.shop_id:
          if not lotto.is_template:
              raise HTTPException(status_code=403, detail="Access denied")
@@ -1021,11 +1135,32 @@ def get_lotto_detail(
     if lotto.rate_profile:
         rates = lotto.rate_profile.rates
 
+    # =========================================================
+    # ✅ Logic คำนวณสีธีม (Theming Logic) ย้ายมาไว้ที่นี่
+    # =========================================================
+    final_theme = "#2563EB" # 1. Default (สีน้ำเงิน)
+
+    # 2. เช็คสีร้านค้า (Shop Theme)
+    if lotto.shop and hasattr(lotto.shop, 'theme_color') and lotto.shop.theme_color:
+        final_theme = lotto.shop.theme_color
+
+    # 3. เช็คสีหมวดหมู่ (Category Theme) - ถ้าตั้งไว้ ให้ทับสีร้านค้า
+    # (ต้องเช็คว่าเป็น Hex Code หรือไม่ เพราะของเก่าอาจเป็น class 'bg-...')
+    if lotto.category:
+        # สมมติว่า lotto.category เก็บ UUID ของหมวดหมู่
+        category = db.query(LottoCategory).filter(
+            func.cast(LottoCategory.id, String) == str(lotto.category)
+        ).first()
+        
+        if category and category.color and category.color.startswith("#"):
+            final_theme = category.color
+
     return {
         "id": lotto.id,
         "name": lotto.name,
         "img_url": lotto.img_url,
         "close_time": lotto.close_time,
         "rates": rates,
-        "is_active": lotto.is_active
+        "is_active": lotto.is_active,
+        "theme_color": final_theme # <--- ส่งสีที่คำนวณเสร็จแล้วไปให้ Frontend
     }
