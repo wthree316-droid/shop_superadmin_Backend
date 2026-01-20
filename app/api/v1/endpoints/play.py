@@ -491,24 +491,26 @@ def import_default_lottos(
 @router.get("/risks/{lotto_id}", response_model=List[NumberRiskResponse])
 def get_risks(
     lotto_id: UUID,
+    date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    today_thai = (datetime.utcnow() + timedelta(hours=7)).date()
-    start_utc = datetime.combine(today_thai, time.min) - timedelta(hours=7)
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+    else:
+        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
 
-    # ✅ 2. [เพิ่มส่วนนี้] ลบเลขอั้น "เก่ากว่าวันนี้" ทิ้งทันที (Hard Delete)
-    # วิธีนี้จะทำให้ Database สะอาดอยู่เสมอ ไม่ต้องเก็บขยะของเมื่อวานไว้
-    db.query(NumberRisk).filter(
-        NumberRisk.lotto_type_id == lotto_id,
-        NumberRisk.created_at < start_utc # เลือกตัวที่เก่ากว่า 00:00 น. ของวันนี้
-    ).delete(synchronize_session=False)
-    
-    db.commit() # ยืนยันการลบ
-
+    # 2. แปลงเป็นช่วงเวลา UTC (Start 00:00 - End 23:59)
+    start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
     # 3. ดึงข้อมูลที่เหลือ (ซึ่งจะเป็นของวันนี้ทั้งหมดแล้ว) ส่งกลับไป
     return db.query(NumberRisk).filter(
-        NumberRisk.lotto_type_id == lotto_id
+        NumberRisk.lotto_type_id == lotto_id,
+        NumberRisk.created_at >= start_utc, # ✅ กรองเอาเฉพาะช่วงเวลานั้น
+        NumberRisk.created_at <= end_utc
     ).all()
 
 @router.post("/risks", response_model=NumberRiskResponse)
@@ -612,20 +614,23 @@ def submit_ticket(
         db.add(new_ticket)
         db.flush() # flush เพื่อให้ new_ticket.id ถูกสร้าง
 
-        # -----------------------------------------------------------
-        # 🔥 จุดแก้ไขสำคัญ: สร้าง Risk Lookup Map แบบละเอียด
-        # -----------------------------------------------------------
-        # ดึงข้อมูล Risk ทั้งหมดของหวยนี้ (แนะนำให้ดึงสดจาก DB ก่อนเพื่อความชัวร์เรื่อง Type)
-        # (ถ้าจะใช้ Cache ต้องแก้ไฟล์ risk_cache.py ให้เก็บ structure ใหม่ก่อน)
-        risk_entries = db.query(NumberRisk).filter(NumberRisk.lotto_type_id == ticket_in.lotto_type_id).all()
+        # 1. หาวันปัจจุบัน
+        today = (datetime.utcnow() + timedelta(hours=7)).date()
+        start_utc = datetime.combine(today, time.min) - timedelta(hours=7)
+        end_utc = datetime.combine(today, time.max) - timedelta(hours=7)
+
+        # 2. Query เฉพาะช่วงเวลานี้ (ไม่เอาของเก่า)
+        risk_entries = db.query(NumberRisk).filter(
+            NumberRisk.lotto_type_id == ticket_in.lotto_type_id,
+            NumberRisk.created_at >= start_utc, # ✅ เพิ่มเงื่อนไขนี้
+            NumberRisk.created_at <= end_utc    # ✅ เพิ่มเงื่อนไขนี้
+        ).all()
         
         # สร้าง Dictionary เพื่อการค้นหาที่รวดเร็ว
-        # Key จะหน้าตาแบบนี้: "12:2up" หรือ "12:ALL"
         risk_lookup = {}
         for r in risk_entries:
-            key = f"{r.number}:{r.specific_bet_type}" # เช่น "59:2up"
+            key = f"{r.number}:{r.specific_bet_type}"
             risk_lookup[key] = r.risk_type
-
         # ดึง Rate Profile มาเตรียมไว้
         rates = {}
         if lotto.rate_profile:
@@ -712,45 +717,39 @@ def submit_ticket(
         raise HTTPException(status_code=500, detail=f"ระบบขัดข้อง: {str(e)}")
 
 # --- Stats & History ---
-@router.get("/stats/daily")  # <-- 1. เปลี่ยนชื่อ endpoint ให้ general ขึ้น
-def get_daily_stats(
-    date_str: Optional[str] = None, # <-- 2. รับวันที่เข้ามา (Format: YYYY-MM-DD)
+@router.get("/stats/range") 
+def get_stats_range(
+    start_date: str, # Format: YYYY-MM-DD
+    end_date: str,   # Format: YYYY-MM-DD
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # --- ส่วนจัดการวันที่ ---
-    if date_str:
-        # กรณีมีการเลือกวันที่มา: แปลง String เป็น Date Object
-        try:
-            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    else:
-        # กรณีไม่เลือก: ใช้วันปัจจุบัน (UTC+7)
-        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+    try:
+        s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+        e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
 
-    # สร้างช่วงเวลา Start - End ของวันนั้น (เพื่อประสิทธิภาพ Query)
-    # เช่น 2023-10-25 00:00:00 ถึง 2023-10-25 23:59:59
-    start_of_day_thai = datetime.combine(target_date, time.min) # 00:00
-    end_of_day_thai = datetime.combine(target_date, time.max)   # 23:59
+    # แปลงเป็น UTC (Start 00:00 - End 23:59)
+    # Start: วันที่เริ่ม เวลา 00:00 (ลบ 7 ชม. เพื่อเป็น UTC)
+    start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
+    
+    # End: วันที่สิ้นสุด เวลา 23:59 (ลบ 7 ชม. เพื่อเป็น UTC)
+    end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
 
-    # 2. ลบ 7 ชั่วโมงเพื่อแปลงกลับเป็น UTC (สำหรับ Database)
-    start_utc = start_of_day_thai - timedelta(hours=7)
-    end_utc = end_of_day_thai - timedelta(hours=7)
-    # --- 3. Query ยอดขาย (ใช้ Range Filter เร็วกว่า func.date) ---
+    # --- Query ยอดขาย ---
     query = db.query(
         func.sum(Ticket.total_amount).label("total_sales"),
         func.count(Ticket.id).label("total_tickets"),
     ).filter(
-        Ticket.created_at >= start_utc,  # มากกว่าหรือเท่ากับ 00:00
-        Ticket.created_at <= end_utc,    # น้อยกว่าหรือเท่ากับ 23:59
+        Ticket.created_at >= start_utc,
+        Ticket.created_at <= end_utc,
         Ticket.status != TicketStatus.CANCELLED
     )
     
-    # กรองร้านค้า (ถ้าเป็น Admin ร้าน)
     if current_user.role == UserRole.admin:
         query = query.filter(Ticket.shop_id == current_user.shop_id)
 
@@ -758,7 +757,7 @@ def get_daily_stats(
     total_sales = sales_result.total_sales or 0
     total_tickets = sales_result.total_tickets or 0
 
-    # --- 4. Query ยอดจ่ายรางวัล ---
+    # --- Query ยอดจ่ายรางวัล ---
     payout_query = db.query(func.sum(TicketItem.winning_amount))\
         .join(Ticket)\
         .filter(Ticket.created_at >= start_utc)\
@@ -772,7 +771,8 @@ def get_daily_stats(
     total_payout = payout_query.scalar() or 0
 
     return {
-        "date": target_date, # ส่งกลับไปด้วยว่านี่คือข้อมูลของวันไหน
+        "start_date": start_date,
+        "end_date": end_date,
         "total_sales": total_sales,
         "total_tickets": total_tickets,
         "total_payout": total_payout,
@@ -817,18 +817,16 @@ def read_history(
     tickets = query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
     return tickets
 
-# 2. แก้ไข API ประวัติร้านค้า (Admin)
+# แก้ไข API นี้ใน play.py
 @router.get("/shop_history", response_model=List[TicketResponse])
 def get_shop_tickets(
     skip: int = 0,
     limit: int = 50,
-    date: Optional[str] = None, # ✅ เพิ่มรับค่าวันที่
+    date: Optional[str] = None,
+    user_id: Optional[UUID] = None, # ✅ 1. เพิ่ม parameter นี้
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
     if not current_user.shop_id:
          raise HTTPException(status_code=400, detail="No shop assigned")
 
@@ -844,22 +842,26 @@ def get_shop_tickets(
     start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
     end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
 
-    tickets = (
-        db.query(Ticket)
-        .options(
+    # สร้าง Query หลัก
+    query = db.query(Ticket).options(
             joinedload(Ticket.user),
             joinedload(Ticket.lotto_type)      
-        )
-        .filter(
+        ).filter(
             Ticket.shop_id == current_user.shop_id,
-            Ticket.created_at >= start_utc, # ✅ กรองตามวันที่
+            Ticket.created_at >= start_utc,
             Ticket.created_at <= end_utc
         )
-        .order_by(Ticket.created_at.desc())
-        .offset(skip)
-        .limit(limit)
+
+    # ✅ 2. เพิ่ม Logic กรอง User ID ถ้าส่งมา
+    if user_id:
+        query = query.filter(Ticket.user_id == user_id)
+
+    # เรียงลำดับและตัดหน้า
+    tickets = query.order_by(Ticket.created_at.desc())\
+        .offset(skip)\
+        .limit(limit)\
         .all()
-    )
+        
     return tickets
 
 @router.get("/stats/summary")
@@ -986,6 +988,8 @@ def cancel_ticket(
 
 @router.get("/stats/top_numbers")
 def get_top_numbers(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     limit: int = 10,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
@@ -993,14 +997,28 @@ def get_top_numbers(
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    today = date.today()
+    # Default เป็นวันนี้ถ้าไม่ส่งมา
+    today = (datetime.utcnow() + timedelta(hours=7)).date()
+    
+    if start_date and end_date:
+        try:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            s_date = e_date = today
+    else:
+        s_date = e_date = today
+
+    start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
     
     query = db.query(
         TicketItem.number,
         func.sum(TicketItem.amount).label("total_amount"),
         func.count(TicketItem.id).label("frequency")
     ).join(Ticket).filter(
-        func.date(Ticket.created_at) == today,
+        Ticket.created_at >= start_utc,
+        Ticket.created_at <= end_utc,
         Ticket.status != 'CANCELLED'
     )
 

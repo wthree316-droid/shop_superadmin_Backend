@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -9,7 +9,7 @@ from app.models.shop import Shop
 from app.models.user import User, UserRole
 from app.schemas import ShopCreate, ShopUpdate, ShopResponse, ShopConfigUpdate
 from sqlalchemy import func
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from app.models.lotto import Ticket, TicketItem, TicketStatus
 from app.models.lotto import LottoCategory
 
@@ -209,38 +209,51 @@ def delete_shop_permanently(
         print(f"Delete Shop Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete shop. Data might be linked to other resources.")
 
-# 2. เพิ่ม API นี้ลงไป (ต่อท้ายไฟล์ หรือวางก่อน update_shop ก็ได้)
+# [แก้ไข] API ดูยอดขายรายร้าน (รองรับช่วงเวลา)
 @router.get("/stats/performance")
 def get_shops_performance(
+    start_date: Optional[str] = None, # ✅ รับค่าวันที่เริ่ม
+    end_date: Optional[str] = None,   # ✅ รับค่าวันที่สิ้นสุด
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # Security: เฉพาะ Superadmin เท่านั้น
     if current_user.role != UserRole.superadmin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    today = date.today()
+    # 1. กำหนดช่วงเวลา (Default: วันนี้)
+    if start_date and end_date:
+        try:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        except ValueError:
+            s_date = e_date = date.today()
+    else:
+        s_date = e_date = date.today()
+
+    # 2. แปลงเป็น UTC Range (Start 00:00 - End 23:59 ของไทย)
+    start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
     
-    # ดึงร้านค้าทั้งหมด (เรียงตามชื่อ หรือวันที่สร้าง)
     shops = db.query(Shop).order_by(Shop.created_at.desc()).all()
     results = []
 
     for shop in shops:
-        # A. ยอดขาย (Total Bet) เฉพาะวันนี้ และไม่รวมบิลยกเลิก
+        # A. ยอดขาย (Total Bet) ตามช่วงเวลา
         sales = db.query(func.sum(Ticket.total_amount))\
             .filter(
                 Ticket.shop_id == shop.id, 
-                func.date(Ticket.created_at) == today,
+                Ticket.created_at >= start_utc, # ✅ ใช้ Range Filter
+                Ticket.created_at <= end_utc,
                 Ticket.status != TicketStatus.CANCELLED
             ).scalar() or 0
 
-        # B. ยอดจ่าย (Total Payout) เฉพาะวันนี้
-        # (ต้อง Join TicketItem เพื่อดูยอด winning_amount ของรายการที่ถูกรางวัล)
+        # B. ยอดจ่าย (Total Payout) ตามช่วงเวลา
         payout = db.query(func.sum(TicketItem.winning_amount))\
             .join(Ticket)\
             .filter(
                 Ticket.shop_id == shop.id,
-                func.date(Ticket.created_at) == today,
+                Ticket.created_at >= start_utc, # ✅ ใช้ Range Filter
+                Ticket.created_at <= end_utc,
                 TicketItem.status == 'WIN',
                 Ticket.status != TicketStatus.CANCELLED
             ).scalar() or 0
@@ -259,9 +272,7 @@ def get_shops_performance(
             "is_active": shop.is_active
         })
 
-    # เรียงลำดับตาม "ยอดขาย" มาก -> น้อย (เพื่อให้เห็นร้านตัวท็อปก่อน)
     results.sort(key=lambda x: x['sales'], reverse=True)
-    
     return results
 
 @router.put("/{shop_id}", response_model=ShopResponse)
