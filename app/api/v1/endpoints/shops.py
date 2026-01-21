@@ -209,11 +209,12 @@ def delete_shop_permanently(
         print(f"Delete Shop Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete shop. Data might be linked to other resources.")
 
-# [แก้ไข] API ดูยอดขายรายร้าน (รองรับช่วงเวลา)
+# API ดูยอดขายรายร้าน (รองรับช่วงเวลา)
+
 @router.get("/stats/performance")
 def get_shops_performance(
-    start_date: Optional[str] = None, # ✅ รับค่าวันที่เริ่ม
-    end_date: Optional[str] = None,   # ✅ รับค่าวันที่สิ้นสุด
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
@@ -238,28 +239,39 @@ def get_shops_performance(
     results = []
 
     for shop in shops:
-        # A. ยอดขาย (Total Bet) ตามช่วงเวลา
-        sales = db.query(func.sum(Ticket.total_amount))\
-            .filter(
-                Ticket.shop_id == shop.id, 
-                Ticket.created_at >= start_utc, # ✅ ใช้ Range Filter
-                Ticket.created_at <= end_utc,
-                Ticket.status != TicketStatus.CANCELLED
-            ).scalar() or 0
+        # Base Filters (ร้าน + ช่วงเวลา)
+        filters = [
+            Ticket.shop_id == shop.id,
+            Ticket.created_at >= start_utc,
+            Ticket.created_at <= end_utc
+        ]
 
-        # B. ยอดจ่าย (Total Payout) ตามช่วงเวลา
+        # A. ยอดขาย (Total Bet) - ไม่รวมบิลที่ยกเลิก
+        sales = db.query(func.sum(Ticket.total_amount))\
+            .filter(*filters, Ticket.status != TicketStatus.CANCELLED)\
+            .scalar() or 0
+
+        # B. ยอดจ่าย (Total Payout)
         payout = db.query(func.sum(TicketItem.winning_amount))\
             .join(Ticket)\
             .filter(
-                Ticket.shop_id == shop.id,
-                Ticket.created_at >= start_utc, # ✅ ใช้ Range Filter
-                Ticket.created_at <= end_utc,
+                *filters,
                 TicketItem.status == 'WIN',
                 Ticket.status != TicketStatus.CANCELLED
             ).scalar() or 0
 
-        # C. คำนวณกำไร
-        profit = sales - payout
+        # ✅ C. ยอดรอผล (Pending) - เอาไว้หักออกจากกำไร
+        pending = db.query(func.sum(Ticket.total_amount))\
+            .filter(*filters, Ticket.status == TicketStatus.PENDING)\
+            .scalar() or 0
+
+        # ✅ D. ยอดที่ยกเลิก/คืน (Cancelled) - แสดงผลอย่างเดียว
+        cancelled = db.query(func.sum(Ticket.total_amount))\
+            .filter(*filters, Ticket.status == TicketStatus.CANCELLED)\
+            .scalar() or 0
+
+        # E. คำนวณกำไรสุทธิ (ตามสูตรใหม่: ยอดขาย - จ่าย - รอผล)
+        profit = sales - payout - pending
 
         results.append({
             "id": str(shop.id),
@@ -268,6 +280,8 @@ def get_shops_performance(
             "logo_url": shop.logo_url,
             "sales": sales,
             "payout": payout,
+            "pending": pending,     # ส่งยอดรอผลไปด้วยเผื่อใช้
+            "cancelled": cancelled, # ส่งยอดยกเลิกไปแสดงผล
             "profit": profit,
             "is_active": shop.is_active
         })

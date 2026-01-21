@@ -719,8 +719,8 @@ def submit_ticket(
 # --- Stats & History ---
 @router.get("/stats/range") 
 def get_stats_range(
-    start_date: str, # Format: YYYY-MM-DD
-    end_date: str,   # Format: YYYY-MM-DD
+    start_date: str, 
+    end_date: str,   
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
@@ -733,42 +733,50 @@ def get_stats_range(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
-    # แปลงเป็น UTC (Start 00:00 - End 23:59)
-    # Start: วันที่เริ่ม เวลา 00:00 (ลบ 7 ชม. เพื่อเป็น UTC)
+    # Start 00:00 - End 23:59 (UTC Timezone Adjusted)
     start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
-    
-    # End: วันที่สิ้นสุด เวลา 23:59 (ลบ 7 ชม. เพื่อเป็น UTC)
     end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
 
-    # --- Query ยอดขาย ---
-    query = db.query(
-        func.sum(Ticket.total_amount).label("total_sales"),
-        func.count(Ticket.id).label("total_tickets"),
-    ).filter(
+    # Base Filters (กรองร้าน + ช่วงเวลา + ไม่เอายกเลิก)
+    # หมายเหตุ: ยอดขาย (Total Sales) เราจะไม่นับบิลที่ยกเลิกอยู่แล้ว (ตาม Logic เดิม)
+    base_filters = [
         Ticket.created_at >= start_utc,
         Ticket.created_at <= end_utc,
         Ticket.status != TicketStatus.CANCELLED
-    )
+    ]
     
     if current_user.role == UserRole.admin:
-        query = query.filter(Ticket.shop_id == current_user.shop_id)
+        base_filters.append(Ticket.shop_id == current_user.shop_id)
 
-    sales_result = query.first()
+    # 1. ยอดขายรวม (Total Sales)
+    sales_query = db.query(
+        func.sum(Ticket.total_amount).label("total_sales"),
+        func.count(Ticket.id).label("total_tickets"),
+    ).filter(*base_filters)
+    
+    sales_result = sales_query.first()
     total_sales = sales_result.total_sales or 0
     total_tickets = sales_result.total_tickets or 0
 
-    # --- Query ยอดจ่ายรางวัล ---
+    # 2. ยอดจ่ายรางวัล (Total Payout)
     payout_query = db.query(func.sum(TicketItem.winning_amount))\
         .join(Ticket)\
-        .filter(Ticket.created_at >= start_utc)\
-        .filter(Ticket.created_at <= end_utc)\
-        .filter(TicketItem.status == 'WIN')\
-        .filter(Ticket.status != TicketStatus.CANCELLED)
-        
-    if current_user.role == UserRole.admin:
-        payout_query = payout_query.filter(Ticket.shop_id == current_user.shop_id)
+        .filter(*base_filters)\
+        .filter(TicketItem.status == 'WIN')
         
     total_payout = payout_query.scalar() or 0
+
+    # ✅ 3. ยอดรอผล (Total Pending) [เพิ่มใหม่]
+    # กรองจาก base_filters เดิม แล้วเพิ่มเงื่อนไข status = PENDING
+    pending_query = db.query(func.sum(Ticket.total_amount))\
+        .filter(*base_filters)\
+        .filter(Ticket.status == TicketStatus.PENDING)
+    
+    total_pending = pending_query.scalar() or 0
+
+    # ✅ 4. คำนวณกำไรสุทธิ (Real Profit)
+    # สูตร: ยอดขาย - จ่ายรางวัล - รอผล ( - ยกเลิก ถูกหักไปแล้วในยอดขาย)
+    profit = total_sales - total_payout - total_pending
 
     return {
         "start_date": start_date,
@@ -776,38 +784,56 @@ def get_stats_range(
         "total_sales": total_sales,
         "total_tickets": total_tickets,
         "total_payout": total_payout,
-        "profit": total_sales - total_payout
+        "total_pending": total_pending, # ส่งค่านี้ไป Frontend
+        "profit": profit
     }
 
 @router.get("/history", response_model=List[TicketResponse])
 def read_history(
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 30, # ✅ ปรับ Limit default เป็น 20
     lotto_type_id: Optional[UUID] = None,
     date: Optional[str] = None,
+    start_date: Optional[str] = None, # ✅ เพิ่มรับค่า start_date
+    end_date: Optional[str] = None,   # ✅ เพิ่มรับค่า end_date
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # กำหนดวันที่เป้าหมาย (ถ้าไม่ส่งมา = วันนี้)
-    if date:
-        try:
-            target_date = datetime.strptime(date, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format")
-    else:
-        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+    # --- 1. จัดการเรื่องวันที่ (Copy Logic จาก get_shop_tickets มาใส่) ---
+    target_start = None
+    target_end = None
 
-    # แปลงเป็นช่วงเวลา UTC สำหรับ Query
-    start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
-    end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
+    try:
+        # กรณีส่งมาเป็นช่วง
+        if start_date and end_date:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+            target_start = datetime.combine(s_date, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(e_date, time.max) - timedelta(hours=7)
+        
+        # กรณีส่งมาวันเดียว
+        elif date:
+            t_date = datetime.strptime(date, "%Y-%m-%d").date()
+            target_start = datetime.combine(t_date, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(t_date, time.max) - timedelta(hours=7)
+        
+        # กรณีไม่ส่ง (เอาวันนี้)
+        else:
+            today = (datetime.utcnow() + timedelta(hours=7)).date()
+            target_start = datetime.combine(today, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(today, time.max) - timedelta(hours=7)
 
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    # --- 2. Query ---
     query = db.query(Ticket).options(
         joinedload(Ticket.items),
         joinedload(Ticket.lotto_type)
     ).filter(
         Ticket.user_id == current_user.id,
-        Ticket.created_at >= start_utc, # ✅ กรองตามวันที่
-        Ticket.created_at <= end_utc
+        Ticket.created_at >= target_start, # ✅ ใช้ตัวแปรใหม่
+        Ticket.created_at <= target_end
     )
 
     if lotto_type_id:
@@ -821,42 +847,58 @@ def read_history(
 @router.get("/shop_history", response_model=List[TicketResponse])
 def get_shop_tickets(
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 30,
     date: Optional[str] = None,
-    user_id: Optional[UUID] = None, # ✅ 1. เพิ่ม parameter นี้
+    start_date: Optional[str] = None, # ✅ รองรับช่วงเวลาตามที่ Frontend ส่งมา
+    end_date: Optional[str] = None,   # ✅ รองรับช่วงเวลาตามที่ Frontend ส่งมา
+    user_id: Optional[UUID] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     if not current_user.shop_id:
          raise HTTPException(status_code=400, detail="No shop assigned")
 
-    # กำหนดวันที่เป้าหมาย
-    if date:
-        try:
-            target_date = datetime.strptime(date, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format")
-    else:
-        target_date = (datetime.utcnow() + timedelta(hours=7)).date()
+    # --- 1. จัดการเรื่องวันที่ (รองรับทั้งแบบเดี่ยวและแบบช่วง) ---
+    target_start = None
+    target_end = None
 
-    start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
-    end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
+    try:
+        # กรณีส่งมาเป็นช่วง (start_date, end_date) จากหน้า ShopHistory ใหม่
+        if start_date and end_date:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+            target_start = datetime.combine(s_date, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(e_date, time.max) - timedelta(hours=7)
+        
+        # กรณีส่งมาวันเดียว (date) แบบเก่า
+        elif date:
+            t_date = datetime.strptime(date, "%Y-%m-%d").date()
+            target_start = datetime.combine(t_date, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(t_date, time.max) - timedelta(hours=7)
+        
+        # กรณีไม่ส่งอะไรมาเลย (เอาวันนี้)
+        else:
+            today = (datetime.utcnow() + timedelta(hours=7)).date()
+            target_start = datetime.combine(today, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(today, time.max) - timedelta(hours=7)
 
-    # สร้าง Query หลัก
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    # --- 2. Query (แก้ตรงนี้!) ---
     query = db.query(Ticket).options(
             joinedload(Ticket.user),
-            joinedload(Ticket.lotto_type)      
+            joinedload(Ticket.lotto_type),
+            joinedload(Ticket.items) # ✅✅✅ [สำคัญมาก] เพิ่มบรรทัดนี้ เพื่อดึงรายการแทงมาทีเดียว
         ).filter(
             Ticket.shop_id == current_user.shop_id,
-            Ticket.created_at >= start_utc,
-            Ticket.created_at <= end_utc
+            Ticket.created_at >= target_start,
+            Ticket.created_at <= target_end
         )
 
-    # ✅ 2. เพิ่ม Logic กรอง User ID ถ้าส่งมา
     if user_id:
         query = query.filter(Ticket.user_id == user_id)
 
-    # เรียงลำดับและตัดหน้า
     tickets = query.order_by(Ticket.created_at.desc())\
         .offset(skip)\
         .limit(limit)\
@@ -1037,27 +1079,31 @@ def get_top_numbers(
 
 @router.get("/stats/members")
 def get_member_stats(
-    date_str: Optional[str] = None,
+    start_date: Optional[str] = None, # ✅ เปลี่ยนจาก date_str เป็น start_date
+    end_date: Optional[str] = None,   # ✅ เพิ่ม end_date
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # 1. จัดการวันที่ (Timezone Safe)
-    if date_str:
-        try:
-            target_date_thai = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            target_date_thai = (datetime.utcnow() + timedelta(hours=7)).date()
-    else:
-        target_date_thai = (datetime.utcnow() + timedelta(hours=7)).date()
+    # 1. จัดการช่วงเวลา (Logic เดียวกับ get_stats_range)
+    try:
+        if start_date and end_date:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        else:
+            # ถ้าไม่ส่งมา เอาวันนี้
+            s_date = e_date = (datetime.utcnow() + timedelta(hours=7)).date()
+            
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
 
-    # 2. แปลงเป็นช่วงเวลา UTC
-    start_utc = datetime.combine(target_date_thai, time.min) - timedelta(hours=7)
-    end_utc = datetime.combine(target_date_thai, time.max) - timedelta(hours=7)
+    # 2. แปลงเป็นช่วงเวลา UTC (Start 00:00 - End 23:59)
+    start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
+    end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
 
-    # 3. Query (ไม่กรอง Role เพื่อให้เห็น Admin เล่นด้วย)
+    # 3. Query Ticket ตามช่วงเวลา
     query = db.query(Ticket).options(
         joinedload(Ticket.user), 
         joinedload(Ticket.items)
@@ -1071,7 +1117,7 @@ def get_member_stats(
 
     tickets = query.all()
 
-    # 4. วนลูปสรุปยอด
+    # 4. วนลูปสรุปยอด (Logic เดิมใช้ได้เลย เพราะมันจะรวมยอดตามช่วงเวลาให้อัตโนมัติ)
     stats = {}
     for t in tickets:
         if not t.user: continue
@@ -1082,7 +1128,7 @@ def get_member_stats(
                 "user_id": uid,
                 "username": t.user.username,
                 "full_name": t.user.full_name or "-",
-                "role": t.user.role.value, # เพิ่ม Role ให้รู้
+                "role": t.user.role.value,
                 "total_bet": Decimal(0),
                 "total_win": Decimal(0),
                 "pending_amount": Decimal(0),
