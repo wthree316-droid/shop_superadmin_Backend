@@ -270,6 +270,10 @@ def get_shops_performance(
             .filter(*filters, Ticket.status == TicketStatus.CANCELLED)\
             .scalar() or 0
 
+        bill_count = db.query(func.count(Ticket.id))\
+            .filter(*filters, Ticket.status != TicketStatus.CANCELLED)\
+            .scalar() or 0
+
         # E. คำนวณกำไรสุทธิ (ตามสูตรใหม่: ยอดขาย - จ่าย - รอผล)
         profit = sales - payout - pending
 
@@ -283,7 +287,8 @@ def get_shops_performance(
             "pending": pending,     # ส่งยอดรอผลไปด้วยเผื่อใช้
             "cancelled": cancelled, # ส่งยอดยกเลิกไปแสดงผล
             "profit": profit,
-            "is_active": shop.is_active
+            "is_active": shop.is_active,
+            "bill_count": bill_count
         })
 
     results.sort(key=lambda x: x['sales'], reverse=True)

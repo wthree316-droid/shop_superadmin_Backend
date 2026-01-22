@@ -752,7 +752,7 @@ def get_stats_range(
     sales_query = db.query(
         func.sum(Ticket.total_amount).label("total_sales"),
         func.count(Ticket.id).label("total_tickets"),
-    ).filter(*base_filters)
+    ).filter(*base_filters, Ticket.status != TicketStatus.CANCELLED)
     
     sales_result = sales_query.first()
     total_sales = sales_result.total_sales or 0
@@ -774,7 +774,12 @@ def get_stats_range(
     
     total_pending = pending_query.scalar() or 0
 
-    # ✅ 4. คำนวณกำไรสุทธิ (Real Profit)
+    # ✅ 4. [เพิ่ม] จำนวนบิลที่ยกเลิก (Cancelled Count)
+    cancelled_count = db.query(func.count(Ticket.id))\
+        .filter(*base_filters, Ticket.status == TicketStatus.CANCELLED)\
+        .scalar() or 0
+    
+    # ✅ 5. คำนวณกำไรสุทธิ (Real Profit)
     # สูตร: ยอดขาย - จ่ายรางวัล - รอผล ( - ยกเลิก ถูกหักไปแล้วในยอดขาย)
     profit = total_sales - total_payout - total_pending
 
@@ -784,7 +789,8 @@ def get_stats_range(
         "total_sales": total_sales,
         "total_tickets": total_tickets,
         "total_payout": total_payout,
-        "total_pending": total_pending, # ส่งค่านี้ไป Frontend
+        "total_pending": total_pending, 
+        "total_cancelled": cancelled_count,
         "profit": profit
     }
 
