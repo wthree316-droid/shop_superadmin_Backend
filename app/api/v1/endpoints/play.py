@@ -584,8 +584,26 @@ def submit_ticket(
     if not lotto:
         raise HTTPException(status_code=404, detail="Lotto type not found")
     
+    # ✅ แก้ไข Logic ใหม่: รองรับหวยข้ามวัน (Cross-day)
     now_time = datetime.now().time()
-    if lotto.close_time and now_time > lotto.close_time:
+    
+    if lotto.open_time and lotto.close_time:
+        is_open = False
+        # กรณีปกติ (เช่น เปิด 08:00 - 15:30)
+        if lotto.open_time < lotto.close_time:
+            if lotto.open_time <= now_time <= lotto.close_time:
+                is_open = True
+        # กรณีข้ามวัน (เช่น เปิด 05:00 - 01:00)
+        else:
+            # ต้องมากกว่าเวลาเปิด OR น้อยกว่าเวลาปิด
+            if now_time >= lotto.open_time or now_time <= lotto.close_time:
+                is_open = True
+        
+        if not is_open:
+             raise HTTPException(status_code=400, detail=f"หวยปิดรับแล้ว (เปิด {lotto.open_time} - {lotto.close_time})")
+
+    # กรณีไม่มี open_time แต่มี close_time (Logic สำรองแบบเดิม)
+    elif lotto.close_time and now_time > lotto.close_time:
         raise HTTPException(status_code=400, detail="หวยปิดรับแล้ว (Market Closed)")
 
     # 3. ตรวจสอบยอดเงินคงเหลือ
