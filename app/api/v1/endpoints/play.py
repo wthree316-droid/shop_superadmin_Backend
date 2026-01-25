@@ -13,7 +13,7 @@ from app.schemas import (
     LottoCreate, LottoResponse,
     RateProfileCreate, RateProfileResponse,
     NumberRiskCreate, NumberRiskResponse,
-    BulkRateRequest, CategoryCreate, CategoryResponse
+    BulkRateRequest, CategoryCreate, CategoryResponse, BulkRiskCreate
 )
 from app.db.session import get_db
 from app.models.lotto import Ticket, TicketItem, LottoType, TicketStatus, RateProfile, NumberRisk, LottoCategory
@@ -514,6 +514,52 @@ def import_default_lottos(
     return {"message": f"ดึงข้อมูลสำเร็จ! เพิ่มหวยใหม่ {imported_count} รายการ"}
 
 # --- Risk Management ---
+@router.post("/risks/batch")
+def create_bulk_risks(
+    payload: BulkRiskCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # ตรวจสอบสิทธิ์ (Admin เท่านั้น)
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    count = 0
+    
+    # ใช้ Transaction (ถ้าพังตัวนึง ให้ Rollback ทั้งหมด หรือจะข้ามก็ได้ แล้วแต่ Design)
+    try:
+        for item in payload.items:
+            # เช็คว่ามีอยู่แล้วไหม (Optional: ถ้ามีแล้วข้าม หรือ Update)
+            existing = db.query(NumberRisk).filter(
+                NumberRisk.lotto_type_id == payload.lotto_type_id,
+                NumberRisk.number == item.number,
+                NumberRisk.specific_bet_type == item.specific_bet_type,
+                # NumberRisk.date == ... (ถ้ามี field วันที่)
+            ).first()
+
+            if not existing:
+                new_risk = NumberRisk(
+                    lotto_type_id=payload.lotto_type_id,
+                    number=item.number,
+                    specific_bet_type=item.specific_bet_type,
+                    risk_type=payload.risk_type,
+                    shop_id=current_user.shop_id, # บันทึกว่าเป็นของร้านไหน
+                    created_by=current_user.id
+                )
+                db.add(new_risk)
+                count += 1
+            else:
+                # ถ้ามีอยู่แล้ว อาจจะแค่อัปเดตสถานะ (เช่นจาก HALF เป็น CLOSE)
+                existing.risk_type = payload.risk_type
+        
+        db.commit()
+        return {"message": "success", "inserted": count}
+
+    except Exception as e:
+        db.rollback()
+        print(e)
+        raise HTTPException(status_code=500, detail="Database error during bulk insert")
+
 @router.get("/risks/{lotto_id}", response_model=List[NumberRiskResponse])
 def get_risks(
     lotto_id: UUID,

@@ -234,6 +234,16 @@ class NumberRiskResponse(NumberRiskCreate):
     id: UUID
     class Config:
         from_attributes = True
+        
+class RiskItem(BaseModel):
+    number: str
+    specific_bet_type: str
+
+class BulkRiskCreate(BaseModel):
+    lotto_type_id: str
+    risk_type: str     # 'CLOSE' | 'HALF'
+    items: List[RiskItem]
+    date: Optional[str] = None
 
 # 1. สร้าง Schema สำหรับรับค่า (ไว้บนสุดของไฟล์ หรือไฟล์ schemas.py)
 class BulkRateRequest(BaseModel):

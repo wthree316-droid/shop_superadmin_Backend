@@ -11,7 +11,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://((.*\.ntlot\.com|ntlot\.com)(:\d+)?",
+    allow_origin_regex=r"https?://(.*\.ntlot\.com|ntlot\.com|localhost:\d+)",
     
     allow_credentials=True, # สำคัญมาก! ต้องเป็น True ถึงจะส่ง Token/Cookie ข้ามโดเมนได้
     allow_methods=["*"],
