@@ -33,9 +33,9 @@ class LottoType(Base):
     category = Column(String, default="GENERAL")
     
     # --- [ชุดเวลา] ---
-    open_time = Column(Time, nullable=True)    # [ใหม่] เวลาเปิด
-    close_time = Column(Time, nullable=True)   # เวลาปิด (มีอยู่แล้ว)
-    result_time = Column(Time, nullable=True)  # [ใหม่] เวลาผลออก
+    open_time = Column(String, nullable=True)    # [ใหม่] เวลาเปิด
+    close_time = Column(String, nullable=True)   # เวลาปิด (มีอยู่แล้ว)
+    result_time = Column(String, nullable=True)  # [ใหม่] เวลาผลออก
     
     # --- [การตั้งค่าอื่นๆ] ---
     is_active = Column(Boolean, default=True)
@@ -69,6 +69,7 @@ class Ticket(Base):
     total_amount = Column(DECIMAL(10, 2), nullable=False)
     status = Column(String, default=TicketStatus.PENDING)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    round_date = Column(Date, nullable=True)
     
     # Relationships
     items = relationship("TicketItem", back_populates="ticket", cascade="all, delete-orphan")
@@ -128,5 +129,5 @@ class LottoCategory(Base):
     color = Column(String, default="bg-gray-100 text-gray-700") # สีปุ่ม (Tailwind Class)
     shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True) # ผูกกับร้านค้า
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    order_index = Column(Integer, default=999)
+    order_index = Column(Integer, default=+10)
     

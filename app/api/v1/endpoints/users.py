@@ -1,15 +1,15 @@
 from typing import List 
 from uuid import UUID   
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session 
 from app.models.user import UserRole, User
 from app.schemas import UserCreate, MemberCreate, CreditAdjustment, UserResponse, UserUpdate
 from app.api import deps
 from app.core.security import get_password_hash, create_access_token
 from app.db.session import get_db
-from app.core.audit_logger import write_audit_log
 from datetime import timedelta
 from app.core.config import settings
+from app.models.shop import Shop
 
 router = APIRouter()
 
@@ -20,11 +20,11 @@ def impersonate_shop_admin(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # 1. เช็คว่าเป็น Superadmin จริงไหม
+    # 1. เช็คว่าเป็น Superadmin
     if current_user.role != UserRole.superadmin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # 2. หา Admin ของร้านนั้น (เอาคนแรกที่เจอ)
+    # 2. หา Admin ของร้าน
     shop_admin = db.query(User).filter(
         User.shop_id == shop_id,
         User.role == UserRole.admin,
@@ -33,8 +33,11 @@ def impersonate_shop_admin(
 
     if not shop_admin:
         raise HTTPException(status_code=404, detail="Shop has no active admin")
+        
+    # ดึงข้อมูลร้านค้าเพื่อเอา Subdomain
+    shop = db.query(Shop).filter(Shop.id == shop_id).first()
 
-    # 3. สร้าง Token เสมือนว่าล็อกอินเป็น Admin คนนั้น
+    # 3. สร้าง Token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         subject=str(shop_admin.id), 
@@ -42,10 +45,10 @@ def impersonate_shop_admin(
         expires_delta=access_token_expires
     )
 
-    # 4. ส่ง Token กลับไป พร้อมบอกว่าเป็นใคร
     return {
         "access_token": access_token,
         "token_type": "bearer",
+        "shop_subdomain": shop.subdomain,
         "user": {
             "username": shop_admin.username,
             "role": shop_admin.role,
@@ -63,7 +66,7 @@ def read_user_me(
     # ดึงชื่อร้าน ถ้ามี shop ผูกอยู่
     shop_name = current_user.shop.name if current_user.shop else None
     shop_logo = current_user.shop.logo_url if current_user.shop else None
-    # แปลง User Model เป็น Dict แล้วเพิ่ม shop_name เข้าไป
+    
     return {
         "id": current_user.id,
         "username": current_user.username,
@@ -96,7 +99,7 @@ def read_shop_admins(
 # Superadmin สร้าง User ระดับ Admin ให้ร้านค้า
 @router.post("/admins", response_model=UserResponse)
 def create_shop_admin(
-    user_in: UserCreate, # ใช้ Schema เดียวกัน แต่ต้องส่ง shop_id มาด้วย
+    user_in: UserCreate, 
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
@@ -104,7 +107,7 @@ def create_shop_admin(
     if current_user.role != UserRole.superadmin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # 2. ต้องระบุ shop_id เสมอ (เพราะ Admin ต้องมีสังกัด)
+    # 2. ต้องระบุ shop_id เสมอ
     if not user_in.shop_id:
         raise HTTPException(status_code=400, detail="Shop ID is required for admin creation")
 
@@ -117,9 +120,9 @@ def create_shop_admin(
         username=user_in.username,
         password_hash=get_password_hash(user_in.password),
         full_name=user_in.full_name,
-        role=UserRole.admin,     # <--- กำหนดเป็น Admin
-        shop_id=user_in.shop_id, # <--- ผูกกับร้านที่ส่งมา
-        credit_balance=0,        # Admin ไม่ต้องมีเครดิตก็ได้ หรือจะใส่ให้เทสก็แล้วแต่
+        role=UserRole.admin,     
+        shop_id=user_in.shop_id, 
+        credit_balance=0,        
         is_active=True
     )
     db.add(new_admin)
@@ -127,7 +130,7 @@ def create_shop_admin(
     db.refresh(new_admin)
     return new_admin
 
-# API ลบ User (สำหรับ Superadmin ลบ Admin ร้าน -> admin ลบ member ในร้าน)
+# API ลบ User
 @router.delete("/{user_id}")
 def delete_user(
     user_id: UUID,
@@ -139,9 +142,8 @@ def delete_user(
     if not user_to_delete:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # 2. ตรวจสอบสิทธิ์ (Logic ใหม่)
+    # 2. ตรวจสอบสิทธิ์
     if current_user.role == UserRole.superadmin:
-        # Superadmin ลบได้หมด (ยกเว้นตัวเอง)
         pass 
         
     elif current_user.role == UserRole.admin:
@@ -153,7 +155,6 @@ def delete_user(
              raise HTTPException(status_code=403, detail="Cannot delete member from another shop")
              
     else:
-        # Member ไม่มีสิทธิ์ลบใคร
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # 3. ป้องกันการลบตัวเอง
@@ -166,23 +167,22 @@ def delete_user(
         db.commit()
     except Exception as e:
         db.rollback()
-        # กรณีลบไม่ได้เพราะติด Foreign Key (เช่น เคยซื้อหวยไว้)
         raise HTTPException(status_code=400, detail="Cannot delete user with active history. Try banning instead.")
 
     return {"status": "success", "message": "User deleted"}
 
-# Admin แก้ไขข้อมูล Member (เช่น รีเซ็ตรหัสผ่านให้กรณีลืม)
+# Admin แก้ไขข้อมูล Member
 @router.put("/members/{user_id}", response_model=UserResponse)
 def update_member_by_admin(
     user_id: UUID,
-    user_in: UserUpdate, # ใช้ Schema เดียวกับตอนแก้ตัวเอง
+    user_in: UserUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     """
     Admin รีเซ็ตรหัสผ่าน หรือแก้ไขข้อมูลให้ Member ในร้านตัวเอง
     """
-    # 1. Security Check: คนทำรายการต้องเป็น Admin หรือ Superadmin
+    # 1. Security Check
     if current_user.role not in [UserRole.admin, UserRole.superadmin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -191,35 +191,25 @@ def update_member_by_admin(
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    # 3. Data Isolation Check: ต้องอยู่ร้านเดียวกัน (ยกเว้น Superadmin)
+    # 3. Data Isolation Check
     if current_user.role == UserRole.admin:
         if member.shop_id != current_user.shop_id:
              raise HTTPException(status_code=403, detail="Cannot update member from another shop")
 
-    # 4. Logic การอัปเดต (คล้ายกับ update_user_me)
-    
-    # 4.1 แก้ Username (ต้องเช็คซ้ำ)
+    # 4. Logic การอัปเดต
     if user_in.username and user_in.username != member.username:
         if db.query(User).filter(User.username == user_in.username).first():
             raise HTTPException(status_code=400, detail="Username already taken")
         member.username = user_in.username
 
-    # 4.2 แก้รหัสผ่าน (Reset Password) -> สำคัญมากต้อง Hash ใหม่
     if user_in.password:
         member.password_hash = get_password_hash(user_in.password)
 
-    # 4.3 แก้ชื่อ
     if user_in.full_name is not None:
         member.full_name = user_in.full_name
 
-    # 4.4 แก้สถานะ (เช่น ปลดแบน/แบน User)
     if user_in.is_active is not None:
         member.is_active = user_in.is_active
-    
-    if user_in.is_active is not None:
-        member.is_active = user_in.is_active
-        
-        # [เพิ่ม Logic ปลดล็อค] ถ้า Admin สั่ง Active ให้รีเซ็ตการล็อคด้วย
         if user_in.is_active == True:
             member.failed_attempts = 0
             member.locked_until = None
@@ -228,9 +218,7 @@ def update_member_by_admin(
     db.commit()
     db.refresh(member)
     
-    # ใส่ shop_name กลับไปให้ครบตาม Schema Response
     member.shop_name = member.shop.name if member.shop else None
-    
     return member
 
 # 1. Admin สร้าง Member ใหม่
@@ -240,15 +228,12 @@ def create_member(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # Security: เฉพาะ Admin/Superadmin
     if current_user.role not in [UserRole.admin, UserRole.superadmin]:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Check User ซ้ำ
     if db.query(User).filter(User.username == member_in.username).first():
         raise HTTPException(status_code=400, detail="Username already registered")
 
-    # Auto Assign Shop ID
     target_shop_id = current_user.shop_id
     if not target_shop_id:
         raise HTTPException(status_code=400, detail="Admin has no shop")
@@ -257,7 +242,7 @@ def create_member(
         username=member_in.username,
         password_hash=get_password_hash(member_in.password),
         full_name=member_in.full_name,
-        role=UserRole.member, # บังคับเป็น member
+        role=UserRole.member, 
         shop_id=target_shop_id,
         credit_balance=0,
         is_active=True
@@ -274,33 +259,25 @@ def update_user_me(
     current_user: User = Depends(deps.get_current_active_user)
 ):
     """
-    ให้ Member แก้ไขข้อมูลส่วนตัว (เปลี่ยนรหัสผ่าน, ชื่อ-นามสกุล, หรือ Username)
+    ให้ Member แก้ไขข้อมูลส่วนตัว
     """
-    # 1. ถ้ามีการแก้ Username ต้องเช็คก่อนว่าซ้ำคนอื่นไหม
     if user_in.username and user_in.username != current_user.username:
         existing_user = db.query(User).filter(User.username == user_in.username).first()
         if existing_user:
             raise HTTPException(status_code=400, detail="Username already taken")
         current_user.username = user_in.username
 
-    # 2. ถ้ามีการแก้ Password ต้อง Hash ใหม่
     if user_in.password:
         current_user.password_hash = get_password_hash(user_in.password)
 
-    # 3. แก้ Full Name
     if user_in.full_name is not None:
         current_user.full_name = user_in.full_name
-
-    # หมายเหตุ: เราจะไม่ update 'is_active' หรือ 'role' จาก endpoint นี้เพื่อความปลอดภัย
-    # แม้ใน Schema UserUpdate จะมี field พวกนั้นก็ตาม
 
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
     
-    # เพิ่ม shop_name กลับไปให้ response (เหมือน read_user_me)
     current_user.shop_name = current_user.shop.name if current_user.shop else None
-    
     return current_user
 
 # 2. Admin ดูรายชื่อ Member ในร้านตัวเอง
@@ -321,58 +298,37 @@ def read_members(
     
     return users
 
-# 3. Admin เติม/ลด เครดิต
+# 3. Admin เติม/ลด เครดิต (Manual Top-up Logic)
 @router.post("/members/{user_id}/credit", response_model=UserResponse)
 def adjust_credit(
     user_id: UUID,
     adjustment: CreditAdjustment,
-    request: Request,               # <-- 1. รับ Request เพื่อเอา IP
-    background_tasks: BackgroundTasks, # <-- 2. รับ BackgroundTasks
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    # Security: ต้องเป็น Admin
+    # Security: ต้องเป็น Admin หรือ Superadmin
     if current_user.role not in [UserRole.admin, UserRole.superadmin]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # หา User เป้าหมาย (ต้องอยู่ในร้านเดียวกันด้วย!)
+    # ✅ [CRITICAL FIX] ใช้ with_for_update() เพื่อ Lock แถวข้อมูลป้องกัน Race Condition
     member = db.query(User).filter(
         User.id == user_id,
         User.shop_id == current_user.shop_id
-    ).first()
+    ).with_for_update().first() 
     
     if not member:
         raise HTTPException(status_code=404, detail="Member not found in your shop")
 
-    # Update Credit (Decimal)
-    # ควรระวัง: adjustment.amount ใน Schema ควรเป็น Decimal หรือ Int
-    old_balance = member.credit_balance
+    # Update Credit
     member.credit_balance += adjustment.amount
     
-    # ป้องกันยอดติดลบ 
+    # ป้องกันยอดติดลบ (กรณีหักเงิน)
     if member.credit_balance < 0:
-        db.rollback()
+        db.rollback() # สำคัญ: ต้อง Rollback Transaction ที่ Lock ไว้
         raise HTTPException(status_code=400, detail="Credit balance cannot be negative")
 
     db.add(member)
     db.commit()
     db.refresh(member)
-    
-    # 3. ยิง Log เข้า Background Task (ไม่ถ่วงเวลา user)
-    background_tasks.add_task(
-        write_audit_log,
-        
-        user=current_user,
-        action="ADJUST_CREDIT",
-        target_id=member.id,
-        target_table="users",
-        details={
-            "amount": float(adjustment.amount),
-            "old_balance": float(old_balance),
-            "new_balance": float(member.credit_balance),
-            "note": adjustment.note
-        },
-        request=request
-    )
     
     return member

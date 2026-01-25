@@ -8,9 +8,9 @@ from app.core import security
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
-from app.core.audit_logger import write_audit_log
 from app.schemas import UserCreate, UserResponse, UserRole, Token
 from app.core.security import get_password_hash
+from app.models.shop import Shop
 
 router = APIRouter()
 
@@ -64,15 +64,6 @@ def login_access_token(
             db.add(user)
             db.commit()
             
-            # (Optional) Log ว่าโดนล็อค
-            background_tasks.add_task(
-                write_audit_log,
-                user=user,
-                action="ACCOUNT_LOCKED",
-                details={"reason": "Too many failed attempts"},
-                request=request
-            )
-            
             raise HTTPException(
                 status_code=400, 
                 detail=f"คุณใส่รหัสผิดเกิน {MAX_FAILED_ATTEMPTS} ครั้ง บัญชีถูกระงับ {LOCKOUT_DURATION_MINUTES} นาที"
@@ -107,14 +98,6 @@ def login_access_token(
     # 6. สร้าง Access Token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
-    background_tasks.add_task(
-        write_audit_log,
-        user=user,
-        action="LOGIN",
-        details={"username": user.username},
-        request=request
-    )
-
     token = security.create_access_token(
         subject=user.id, 
         role=user.role.value, 
@@ -127,35 +110,34 @@ def login_access_token(
     }
 
 
-# ✅ [เพิ่มใหม่] API สมัครสมาชิก (Public Register)
 @router.post("/register", response_model=UserResponse)
 def register(
     user_in: UserCreate,
     db: Session = Depends(get_db)
 ):
-    # 1. ตรวจสอบ Username ซ้ำ (เช็คทั่วทั้งระบบ)
+    # 1. ตรวจสอบ Username ซ้ำ
     if db.query(User).filter(User.username == user_in.username).first():
         raise HTTPException(
             status_code=400,
             detail="ชื่อผู้ใช้นี้ถูกใช้งานแล้ว"
         )
 
-    # 2. ตรวจสอบ Shop ID (สำคัญมากสำหรับระบบ Subdomain)
-    # Frontend ต้องส่ง shop_id มาด้วย (ได้จาก useShop -> API)
-    # ถ้าไม่มี shop_id แสดงว่าสมัครลอยๆ (อาจจะห้าม หรือให้เป็น member ไม่มีสังกัดก็ได้)
+    # 2. ตรวจสอบ Shop ID และ **เช็คว่ามีร้านจริงไหม** (เพิ่มตรงนี้)
     if not user_in.shop_id:
-        raise HTTPException(
-            status_code=400, 
-            detail="Shop ID is required for registration"
-        )
+        raise HTTPException(status_code=400, detail="Shop ID is required")
+    
+    # ✅ [เพิ่ม] ค้นหาร้านค้าจริงก่อน ถ้าไม่เจอให้เด้ง Error สวยๆ
+    shop = db.query(Shop).filter(Shop.id == user_in.shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found or Invalid Shop ID")
 
     # 3. สร้าง User ใหม่
     user = User(
         username=user_in.username,
         password_hash=get_password_hash(user_in.password),
         full_name=user_in.full_name,
-        role=UserRole.member,  # สมัครเองต้องเป็น Member เท่านั้น
-        shop_id=user_in.shop_id, # ผูกกับร้านทันที
+        role=UserRole.member,
+        shop_id=user_in.shop_id, 
         is_active=True,
         credit_balance=0
     )
@@ -164,7 +146,7 @@ def register(
     db.commit()
     db.refresh(user)
     
-    # เพิ่ม shop_name ให้ response สวยงาม (ถ้าจำเป็น)
-    user.shop_name = user.shop.name if user.shop else None
+    # ตรงนี้ไม่ต้องใส่ user.shop_name ก็ได้ เพราะ Pydantic schema มักจะจัดการให้ 
+    # แต่ถ้าใส่ไว้ก็ไม่เสียหายครับ
     
     return user

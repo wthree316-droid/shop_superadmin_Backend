@@ -204,18 +204,20 @@ class LottoCreate(BaseModel):
     rate_profile_id: Optional[UUID] = None
     img_url: Optional[str] = None
     open_time: Optional[str] = None   
-    close_time: str
+    close_time: Optional[str] = None 
     result_time: Optional[str] = None
     api_link: Optional[str] = None
     open_days: List[str] = []
+    rules: Optional[Dict[str, Any]] = None
     is_template: bool = False
+
 
 class LottoResponse(LottoCreate):
     id: UUID
     is_active: bool
-    open_time: Optional[time] = None
-    close_time: Optional[time] = None
-    result_time: Optional[time] = None
+    open_time: Optional[str] = None
+    close_time: Optional[str] = None
+    result_time: Optional[str] = None
     shop_id: Optional[UUID] = None
 
     class Config:
@@ -230,81 +232,6 @@ class NumberRiskCreate(BaseModel):
 
 class NumberRiskResponse(NumberRiskCreate):
     id: UUID
-    class Config:
-        from_attributes = True
-
-# --- Audit Log Schemas ---
-class AuditLogResponse(BaseModel):
-    id: int
-    action: str
-    target_table: Optional[str]
-    details: Optional[Dict[str, Any]]
-    ip_address: Optional[str]
-    created_at: datetime
-    user_agent: Optional[str]
-    user_id: UUID
-    username: Optional[str] = None
-    shop_name: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
-
-
-# --- Bank Account ---
-class BankAccountCreate(BaseModel):
-    bank_name: str
-    account_name: str
-    account_number: str
-
-class BankAccountResponse(BankAccountCreate):
-    id: UUID
-    is_active: bool
-    class Config:
-        from_attributes = True
-
-# --- Top-up Request ---
-class TopupCreate(BaseModel):
-    amount: Decimal
-    proof_image: Optional[str] = None # URL รูปสลิป
-
-    @field_validator('amount')
-    def validate_amount(cls, v):
-        if v <= 0: raise ValueError("ยอดเงินต้องมากกว่า 0")
-        return v
-
-class TopupAction(BaseModel):
-    status: str # "APPROVED" หรือ "REJECTED"
-    remark: Optional[str] = None
-
-class TopupResponse(BaseModel):
-    id: UUID
-    amount: Decimal
-    proof_image: Optional[str]
-    status: str
-    created_at: datetime
-    user_id: UUID
-    username: Optional[str] = None # เอาไว้โชว์ชื่อคนแจ้ง
-    
-    class Config:
-        from_attributes = True
-
-class WithdrawCreate(BaseModel):
-    amount: Decimal
-    bank_name: str
-    account_name: str
-    account_number: str
-
-    @field_validator('amount')
-    def validate_amount(cls, v):
-        if v <= 0: raise ValueError("ยอดเงินต้องมากกว่า 0")
-        return v
-
-class WithdrawResponse(WithdrawCreate):
-    id: UUID
-    status: str
-    created_at: datetime
-    admin_remark: Optional[str]
-    
     class Config:
         from_attributes = True
 

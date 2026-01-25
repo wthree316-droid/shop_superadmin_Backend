@@ -1,6 +1,7 @@
 import os
 from pydantic_settings import BaseSettings
-
+from datetime import datetime
+import pytz # แนะนำให้ลง pip install pytz ถ้ายังไม่มี
 class Settings(BaseSettings):
     DATABASE_URL: str
     SECRET_KEY: str
@@ -14,3 +15,8 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+
+def get_thai_now():
+    """ดึงเวลาปัจจุบันโซนไทย (Asia/Bangkok) เสมอ ไม่ว่า Server จะอยู่ที่ไหน"""
+    tz = pytz.timezone('Asia/Bangkok')
+    return datetime.now(tz)

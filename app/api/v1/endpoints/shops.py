@@ -181,24 +181,17 @@ def delete_shop_permanently(
         
         # 1. ลบรายการแทง และ โพย
         db.execute(text("DELETE FROM ticket_items WHERE ticket_id IN (SELECT id FROM tickets WHERE shop_id = :sid)"), {"sid": shop_id})
-        db.execute(text("DELETE FROM tickets WHERE shop_id = :sid"), {"sid": shop_id})
+        db.execute(text("DELETE FROM tickets WHERE shop_id = :sid"), {"sid": shop_id})      
         
-        # 2. ลบประวัติการเงิน/เติมเงิน
-        db.execute(text("DELETE FROM topup_requests WHERE shop_id = :sid"), {"sid": shop_id})
-        db.execute(text("DELETE FROM shop_bank_accounts WHERE shop_id = :sid"), {"sid": shop_id})
-        
-        # 3. ลบ Logs
-        db.execute(text("DELETE FROM audit_logs WHERE shop_id = :sid"), {"sid": shop_id})
-        
-        # 4. ลบหวยที่ร้านสร้างเอง
+        # 2. ลบหวยที่ร้านสร้างเอง
         db.execute(text("DELETE FROM number_risks WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE shop_id = :sid)"), {"sid": shop_id})
         db.execute(text("DELETE FROM lotto_results WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE shop_id = :sid)"), {"sid": shop_id})
         db.execute(text("DELETE FROM lotto_types WHERE shop_id = :sid"), {"sid": shop_id})
 
-        # 5. ลบ Users ในร้าน
+        # 3. ลบ Users ในร้าน
         db.execute(text("DELETE FROM users WHERE shop_id = :sid"), {"sid": shop_id})
 
-        # 6. สุดท้าย... ลบร้าน
+        # 4. สุดท้าย... ลบร้าน
         db.delete(shop)
         
         db.commit()
