@@ -11,7 +11,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(.*\.vercel\.app|.*\.ntlot\.com|ntlot\.com)(:\d+)?",
+    allow_origin_regex=r"https?://((.*\.ntlot\.com|ntlot\.com)(:\d+)?",
     
     allow_credentials=True, # สำคัญมาก! ต้องเป็น True ถึงจะส่ง Token/Cookie ข้ามโดเมนได้
     allow_methods=["*"],
@@ -28,7 +28,7 @@ def root():
     return {
         "status": "online",
         "message": "Welcome to shop API System",
-        "version": "1.0.0"
+        "version": "1.0.1"
     }
 
 # หมายเหตุ: ไม่ต้องใส่ uvicorn.run ตรงนี้ 

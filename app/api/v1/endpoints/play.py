@@ -791,44 +791,60 @@ def get_stats_range(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
+    # ปรับเวลาให้ครอบคลุมทั้งวัน (UTC+7 workaround)
     start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
     end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
 
+    # ✅ แก้ไข 1: base_filters เอาแค่ "เวลา" และ "ร้านค้า" พอ (อย่าเพิ่งกรองสถานะตรงนี้)
     base_filters = [
         Ticket.created_at >= start_utc,
-        Ticket.created_at <= end_utc,
-        Ticket.status != TicketStatus.CANCELLED
+        Ticket.created_at <= end_utc
     ]
     
     if current_user.role == UserRole.admin:
         base_filters.append(Ticket.shop_id == current_user.shop_id)
 
+    # ---------------------------------------------------
+    # 1. ยอดขาย (ต้องไม่รวมบิลยกเลิก)
+    # ---------------------------------------------------
     sales_query = db.query(
         func.sum(Ticket.total_amount).label("total_sales"),
         func.count(Ticket.id).label("total_tickets"),
-    ).filter(*base_filters, Ticket.status != TicketStatus.CANCELLED)
+    ).filter(*base_filters, Ticket.status != TicketStatus.CANCELLED) # ✅ กรองไม่เอา Cancel ตรงนี้
     
     sales_result = sales_query.first()
     total_sales = sales_result.total_sales or 0
     total_tickets = sales_result.total_tickets or 0
 
+    # ---------------------------------------------------
+    # 2. ยอดจ่ายรางวัล (เฉพาะบิลที่ดี และถูกรางวัล)
+    # ---------------------------------------------------
     payout_query = db.query(func.sum(TicketItem.winning_amount))\
         .join(Ticket)\
         .filter(*base_filters)\
+        .filter(Ticket.status != TicketStatus.CANCELLED)\
         .filter(TicketItem.status == 'WIN')
         
     total_payout = payout_query.scalar() or 0
 
+    # ---------------------------------------------------
+    # 3. ยอดรอผล (Pending)
+    # ---------------------------------------------------
     pending_query = db.query(func.sum(Ticket.total_amount))\
         .filter(*base_filters)\
         .filter(Ticket.status == TicketStatus.PENDING)
     
     total_pending = pending_query.scalar() or 0
 
+    # ---------------------------------------------------
+    # 4. ยอดบิลยกเลิก (Count)
+    # ---------------------------------------------------
+    # ✅ แก้ไข 2: query นี้จะทำงานได้แล้ว เพราะ base_filters ไม่ได้กัน Cancelled ออก
     cancelled_count = db.query(func.count(Ticket.id))\
         .filter(*base_filters, Ticket.status == TicketStatus.CANCELLED)\
         .scalar() or 0
     
+    # คำนวณกำไร (ยอดขาย - จ่าย - รอผล)
     profit = total_sales - total_payout - total_pending
 
     return {
@@ -838,7 +854,7 @@ def get_stats_range(
         "total_tickets": total_tickets,
         "total_payout": total_payout,
         "total_pending": total_pending, 
-        "total_cancelled": cancelled_count,
+        "total_cancelled": cancelled_count, # ✅ ค่านี้จะส่งออกไปถูกต้องแล้ว
         "profit": profit
     }
 
