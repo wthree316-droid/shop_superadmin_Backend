@@ -98,10 +98,19 @@ def get_categories(
         return db.query(LottoCategory).order_by(LottoCategory.shop_id, LottoCategory.order_index.asc()).all()
         
     # 3. Member: (ปกติต้องดึงตามร้านที่เล่น) - อันนี้เผื่อไว้
+   # 3. Member: แก้ไขตรงนี้ครับ! ✅
     else:
-        # สมมติว่า Member เห็นหมวดกลางไปก่อน หรือต้องส่ง shop_id มาเพื่อ filter
-        return db.query(LottoCategory).filter(LottoCategory.shop_id == None).order_by(LottoCategory.order_index.asc()).all()
-
+        # ให้เห็น "หมวดกลาง (None)" และ "หมวดของร้านที่สังกัด (current_user.shop_id)"
+        if current_user.shop_id:
+            query = db.query(LottoCategory).filter(
+                (LottoCategory.shop_id == current_user.shop_id) | 
+                (LottoCategory.shop_id == None)
+            )
+        else:
+            # ถ้าไม่มีสังกัดร้าน (กรณีแปลกๆ) ให้เห็นแค่หมวดกลาง
+            query = db.query(LottoCategory).filter(LottoCategory.shop_id == None)
+            
+        return query.order_by(LottoCategory.order_index.asc()).all()
 # ค้นหา @router.post("/categories" ...
 @router.post("/categories", response_model=CategoryResponse)
 def create_category(
