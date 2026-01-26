@@ -1090,9 +1090,33 @@ def cancel_ticket(
             raise HTTPException(status_code=403, detail="Not your ticket")
         
         if ticket.lotto_type.close_time:
-            now_time = datetime.now().time()
-            if now_time > ticket.lotto_type.close_time:
-                raise HTTPException(status_code=400, detail="Cannot cancel: Market is closed")
+            try:
+                # 1. เตรียมเวลาปัจจุบัน (ไทย)
+                now_thai = datetime.utcnow() + timedelta(hours=7)
+                now_time = now_thai.time()
+
+                # 2. เตรียมเวลาปิด (แปลงจาก String -> Time)
+                close_val = ticket.lotto_type.close_time
+                close_obj = None
+
+                if isinstance(close_val, str):
+                    # ถ้าเป็น String ให้แปลง
+                    # รองรับทั้งแบบ "HH:MM" และ "HH:MM:SS"
+                    time_str = close_val
+                    if len(time_str) == 5: 
+                        time_str += ":00"
+                    close_obj = datetime.strptime(time_str, "%H:%M:%S").time()
+                else:
+                    # ถ้าเป็น Time Object อยู่แล้ว (เผื่อไว้)
+                    close_obj = close_val
+
+                # 3. เปรียบเทียบ (ต้องเป็น Time vs Time)
+                if close_obj and now_time > close_obj:
+                    raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกได้: หวยปิดรับแล้ว")
+
+            except ValueError:
+                # กรณีข้อมูลเวลาใน DB ผิดพลาด ให้ข้ามการเช็คไปก่อน
+                pass
 
     elif current_user.role == UserRole.admin:
         if ticket.shop_id != current_user.shop_id:
