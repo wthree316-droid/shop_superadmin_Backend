@@ -114,6 +114,7 @@ class NumberRisk(Base):
     __tablename__ = "number_risks"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     lotto_type_id = Column(UUID(as_uuid=True), ForeignKey("lotto_types.id"), nullable=False)
+    shop_id = Column(UUID(as_uuid=True), nullable=True)
     number = Column(String, nullable=False)  # เลขที่อั้น เช่น "59", "123"
     risk_type = Column(String, nullable=False) # CLOSE=ปิดรับ, HALF=จ่ายครึ่ง
     specific_bet_type: str = Column(String, default="ALL") # ค่าที่เป็นไปได้: 'ALL', '2up', '2down', '3top', '3tod', 'run_up', 'run_down'

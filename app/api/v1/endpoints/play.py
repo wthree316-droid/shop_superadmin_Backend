@@ -535,15 +535,30 @@ def create_bulk_risks(
 
     count = 0
     
-    # ใช้ Transaction (ถ้าพังตัวนึง ให้ Rollback ทั้งหมด หรือจะข้ามก็ได้ แล้วแต่ Design)
+    # Default คือเวลาปัจจุบัน
+    risk_created_at = datetime.utcnow()
+    # ถ้ามีการส่งวันที่มา (YYYY-MM-DD) ให้ใช้เวลานั้น (แปลงเป็น UTC 00:00 ไทย)
+    # สูตร: วันที่เลือก 00:00 น. - 7 ชั่วโมง = UTC ของวันนั้น
+    if hasattr(payload, 'date') and payload.date:
+        try:
+            target_date = datetime.strptime(payload.date, "%Y-%m-%d").date()
+            risk_created_at = datetime.combine(target_date, time.min) - timedelta(hours=7)
+        except ValueError:
+            pass # ถ้า format ผิด ให้ใช้วันปัจจุบัน
+
     try:
         for item in payload.items:
-            # เช็คว่ามีอยู่แล้วไหม (Optional: ถ้ามีแล้วข้าม หรือ Update)
+            # เช็คว่ามีอยู่แล้วไหม (ในวันเดียวกัน)
+            # เราเช็คช่วงเวลาของวันนั้นๆ
+            start_of_day = risk_created_at
+            end_of_day = risk_created_at + timedelta(days=1)
+
             existing = db.query(NumberRisk).filter(
                 NumberRisk.lotto_type_id == payload.lotto_type_id,
                 NumberRisk.number == item.number,
                 NumberRisk.specific_bet_type == item.specific_bet_type,
-                # NumberRisk.date == ... (ถ้ามี field วันที่)
+                NumberRisk.created_at >= start_of_day,
+                NumberRisk.created_at < end_of_day
             ).first()
 
             if not existing:
@@ -552,13 +567,14 @@ def create_bulk_risks(
                     number=item.number,
                     specific_bet_type=item.specific_bet_type,
                     risk_type=payload.risk_type,
-                    shop_id=current_user.shop_id, # บันทึกว่าเป็นของร้านไหน
-                    created_by=current_user.id
+                    shop_id=current_user.shop_id,
+                    created_at=risk_created_at # ✅ บันทึกวันที่ที่ถูกต้อง
+                    # created_by=current_user.id ❌ เอาออกก่อน เพื่อแก้ Error 500 (ถ้า DB ไม่มี col นี้)
                 )
                 db.add(new_risk)
                 count += 1
             else:
-                # ถ้ามีอยู่แล้ว อาจจะแค่อัปเดตสถานะ (เช่นจาก HALF เป็น CLOSE)
+                # ถ้ามีอยู่แล้ว อัปเดตสถานะ
                 existing.risk_type = payload.risk_type
         
         db.commit()
@@ -566,8 +582,8 @@ def create_bulk_risks(
 
     except Exception as e:
         db.rollback()
-        print(e)
-        raise HTTPException(status_code=500, detail="Database error during bulk insert")
+        print(f"Bulk Risk Error: {e}") # ดู Log ได้ชัดเจนขึ้น
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/risks/{lotto_id}", response_model=List[NumberRiskResponse])
 def get_risks(
