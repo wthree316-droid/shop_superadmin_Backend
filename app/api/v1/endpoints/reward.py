@@ -5,7 +5,7 @@ from app.api import deps
 from app.db.session import get_db
 from app.models.user import User, UserRole
 from app.models.lotto import Ticket, TicketItem, TicketStatus, LottoResult, NumberRisk, LottoType
-from app.schemas import RewardRequest, RewardResultResponse
+from app.schemas import RewardRequest, RewardResultResponse, RewardHistoryResponse
 from app.core.config import get_thai_now
 from decimal import Decimal
 from datetime import date
@@ -71,22 +71,6 @@ def issue_reward(
     
     db.commit() # บันทึกผลรางวัลก่อน (สำคัญ)
 
-    # 4. ✅ เตรียมเลขอั้น (Risk) ของ "ทุกร้าน"
-    # ต้องแยก Risk ตาม Lotto ID เพราะร้าน A อาจจะอั้นไม่เหมือนร้าน B
-    all_risks = db.query(NumberRisk).filter(
-        NumberRisk.lotto_type_id.in_(related_lotto_ids)
-    ).all()
-    
-    # สร้าง Dictionary เก็บ Risk แยกตาม Lotto ID
-    # Format: { lotto_id: { "เลข:ประเภท": "สถานะ" } }
-    risk_map_by_lotto = {}
-    for r in all_risks:
-        lid = r.lotto_type_id
-        if lid not in risk_map_by_lotto:
-            risk_map_by_lotto[lid] = {}
-        
-        key = f"{r.number}:{r.specific_bet_type or 'ALL'}"
-        risk_map_by_lotto[lid][key] = r.risk_type
 
     # 5. ✅ ดึงโพย PENDING จาก "ทุกร้าน" ที่เกี่ยวข้องมาตรวจ
     pending_tickets = db.query(Ticket).options(joinedload(Ticket.items)).filter(
@@ -108,9 +92,6 @@ def issue_reward(
     for ticket in pending_tickets:
         is_ticket_win = False
         ticket_payout = Decimal(0)
-        
-        # ดึง Risk Map ของหวยใบนี้ (เฉพาะร้านนี้)
-        this_lotto_risk = risk_map_by_lotto.get(ticket.lotto_type_id, {})
 
         for item in ticket.items:
             if item.status == TicketStatus.CANCELLED: continue
@@ -118,17 +99,7 @@ def issue_reward(
             # ตรวจรางวัลเบื้องต้น
             is_win = check_is_win(item.bet_type, item.number, data.top_3, data.bottom_2)
             
-            # 🔥 Double Check: ถ้าถูกรางวัล ต้องเช็คด้วยว่าติดเลขอั้น (CLOSE) ของร้านนั้นๆ หรือไม่
-            if is_win:
-                s_key = f"{item.number}:{item.bet_type}"
-                g_key = f"{item.number}:ALL"
                 
-                # เช็คจาก Map ที่เตรียมไว้
-                risk = this_lotto_risk.get(s_key) or this_lotto_risk.get(g_key)
-                
-                if risk == 'CLOSE':
-                    is_win = False
-            
             # คำนวณเงิน
             item_payout = Decimal(0)
             if is_win:
@@ -192,3 +163,23 @@ def get_daily_rewards(
         } 
         for r in results
     }
+
+@router.get("/history")
+def get_reward_history(
+    lotto_type_id: UUID,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    results = db.query(LottoResult).filter(
+        LottoResult.lotto_type_id == lotto_type_id
+    ).order_by(LottoResult.round_date.desc()).limit(limit).all()
+    
+    return [
+        {
+            "round_date": r.round_date,
+            "top_3": r.reward_data.get("top") if r.reward_data else "",
+            "bottom_2": r.reward_data.get("bottom") if r.reward_data else ""
+        }
+        for r in results
+    ]

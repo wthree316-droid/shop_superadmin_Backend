@@ -660,7 +660,6 @@ def delete_risk(
         
     return {"status": "deleted"}
 
-# --- Submit Ticket (แก้ใหม่: รับเลขปิดได้ แต่คิดเงิน 0 บาท) ---
 @router.post("/submit_ticket", response_model=TicketResponse)
 def submit_ticket(
     ticket_in: TicketCreate,
@@ -678,13 +677,13 @@ def submit_ticket(
     # 2. ตรวจสอบหวย
     lotto = db.query(LottoType).filter(LottoType.id == ticket_in.lotto_type_id).first()
     if not lotto:
-        raise HTTPException(status_code=404, detail="Lotto type not found")
+        raise HTTPException(status_code=404, detail="ไม่พบประเภทหวย")
     
-    # 3. คำนวณงวดวันที่ (ใช้ Logic เดิมของคุณ)
+    # 3. คำนวณงวดวันที่
     now_thai = get_thai_now()
     target_round_date = now_thai.date()
     
-    rules = lotto.rules or {}
+    rules = lotto.rules if lotto.rules else {} 
     schedule_type = rules.get('schedule_type', 'weekly')
 
     if schedule_type == 'monthly':
@@ -698,11 +697,17 @@ def submit_ticket(
                 break
             if d == current_day:
                 if lotto.close_time:
-                    close_h, close_m = map(int, str(lotto.close_time)[:5].split(':'))
-                    close_dt = now_thai.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-                    if now_thai < close_dt:
-                        found_date = d
-                        break
+                    try:
+                        time_str = str(lotto.close_time)
+                        if len(time_str) == 5: time_str += ":00"
+                        close_h, close_m, _ = map(int, time_str.split(':'))
+                        close_dt = now_thai.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+                        if now_thai < close_dt:
+                            found_date = d
+                            break
+                    except:
+                        pass
+
         if found_date == -1:
             found_date = target_dates[0]
             next_month = now_thai.replace(day=28) + timedelta(days=4) 
@@ -711,19 +716,23 @@ def submit_ticket(
             target_round_date = date(now_thai.year, now_thai.month, found_date)
     else:
         if lotto.close_time:
-            close_h, close_m = map(int, str(lotto.close_time)[:5].split(':'))
-            close_dt = now_thai.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-            if now_thai > close_dt:
-                target_round_date = target_round_date + timedelta(days=1)
+            try:
+                time_str = str(lotto.close_time)
+                if len(time_str) == 5: time_str += ":00"
+                close_h, close_m, _ = map(int, time_str.split(':'))
+                close_dt = now_thai.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+                if now_thai > close_dt:
+                    target_round_date = target_round_date + timedelta(days=1)
+            except:
+                pass
 
-    # =========================================================
-    # 🔥 4. เตรียมเลขอั้น (Risk) มาเช็ค (Logic วันต่อวัน)
-    # =========================================================
+    # 4. เตรียมเลขอั้น (Risk)
     r_start = datetime.combine(target_round_date, time.min) - timedelta(hours=7)
     r_end = datetime.combine(target_round_date, time.max) - timedelta(hours=7)
 
     daily_risks = db.query(NumberRisk).filter(
         NumberRisk.lotto_type_id == ticket_in.lotto_type_id,
+        NumberRisk.shop_id == target_shop_id, 
         NumberRisk.created_at >= r_start,
         NumberRisk.created_at <= r_end
     ).all()
@@ -733,103 +742,99 @@ def submit_ticket(
         risk_map[f"{r.number}:{r.specific_bet_type}"] = r.risk_type
         risk_map[f"{r.number}:ALL"] = r.risk_type
 
-    # เตรียม Rate Profile
     rates = {}
-    if lotto.rate_profile:
+    if lotto.rate_profile and lotto.rate_profile.rates:
         rates = lotto.rate_profile.rates
 
-    # =========================================================
-    # 🔥 5. คำนวณยอดเงินจริง (ตัดเลขปิดออก) และเตรียมรายการ
-    # =========================================================
+    # 5. คำนวณยอดเงิน
     processed_items = []
     total_amount = Decimal(0)
 
     for item_in in ticket_in.items:
-        # 5.1 เช็คสถานะความเสี่ยง
         check_key = f"{item_in.number}:{item_in.bet_type}"
         check_key_all = f"{item_in.number}:ALL"
         risk_status = risk_map.get(check_key) or risk_map.get(check_key_all)
 
-        # 5.2 ดึงเรทจ่ายมาตรฐาน
         rate_config = rates.get(item_in.bet_type, {})
+        base_pay = Decimal(0)
+        min_bet = Decimal("1")
+        max_bet = Decimal("0")
+
         if isinstance(rate_config, (int, float, str, Decimal)):
             base_pay = Decimal(str(rate_config))
-            min_bet = Decimal("1")
-            max_bet = Decimal("100000")
         else:
             base_pay = Decimal(str(rate_config.get('pay', 0)))
             min_bet = Decimal(str(rate_config.get('min', 1)))
             max_bet = Decimal(str(rate_config.get('max', 0)))
 
-        # กำหนดตัวแปรที่จะบันทึก
-        final_amount = item_in.amount
+        final_amount = Decimal(str(item_in.amount)) 
         final_rate = base_pay
         
-        # --- LOGIC จัดการเลขอั้น ---
         if risk_status == "CLOSE":
-            # ✅ ถ้าปิด: รับเข้าโพยได้ แต่ปรับยอดเงินและเรทเป็น 0
             final_amount = Decimal(0)
             final_rate = Decimal(0)
+        
         elif risk_status == "HALF":
-            # ✅ ถ้าครึ่ง: จ่ายครึ่งเดียว
             final_rate = base_pay / 2
+            if final_amount < min_bet:
+                raise HTTPException(status_code=400, detail=f"แทงขั้นต่ำ {min_bet:,.0f} บาท ({item_in.bet_type})")
+            if max_bet > 0 and final_amount > max_bet:
+                raise HTTPException(status_code=400, detail=f"แทงสูงสุด {max_bet:,.0f} บาท ({item_in.bet_type})")
+        
         else:
-            # ✅ ปกติ: เช็ค Limit (ถ้าเลขปิด เราไม่เช็ค Limit เพราะมัน 0 บาทอยู่แล้ว)
             if base_pay == 0:
                  raise HTTPException(status_code=400, detail=f"ไม่พบอัตราจ่ายสำหรับ: {item_in.bet_type}")
-            if item_in.amount < min_bet:
+            if final_amount < min_bet:
                 raise HTTPException(status_code=400, detail=f"แทงขั้นต่ำ {min_bet:,.0f} บาท ({item_in.bet_type})")
-            if max_bet > 0 and item_in.amount > max_bet:
+            if max_bet > 0 and final_amount > max_bet:
                 raise HTTPException(status_code=400, detail=f"แทงสูงสุด {max_bet:,.0f} บาท ({item_in.bet_type})")
 
-        # เพิ่มเข้าลิสต์เตรียมบันทึก
         processed_items.append({
             "number": item_in.number,
             "bet_type": item_in.bet_type,
-            "amount": final_amount,   # ยอดเงินที่จะบันทึกจริง (0 ถ้าปิด)
-            "reward_rate": final_rate # เรทที่จะบันทึกจริง (0 ถ้าปิด)
+            "amount": final_amount,
+            "reward_rate": final_rate
         })
         
-        # บวกยอดรวมเฉพาะตัวที่ไม่ใช่เลขปิด
         total_amount += final_amount
 
-    # =========================================================
     # 6. ตัดเงินและบันทึก
-    # =========================================================
     user_db = db.query(User).filter(User.id == current_user.id).with_for_update().first()
 
-    if user_db.credit_balance < total_amount:
+    current_credit = Decimal(str(user_db.credit_balance))
+
+    if current_credit < total_amount:
         raise HTTPException(
             status_code=400, 
-            detail=f"ยอดเงินไม่พอ (ขาด {total_amount - current_user.credit_balance:.2f} บาท)"
+            detail=f"ยอดเงินไม่พอ (ขาด {total_amount - current_credit:,.2f} บาท)"
         )
 
     try:
-        # ตัดเงิน
-        user_db.credit_balance -= total_amount
+        new_balance = current_credit - total_amount
+        user_db.credit_balance = new_balance
+        
         db.add(current_user)
 
-        # สร้าง Header Ticket
         new_ticket = Ticket(
             shop_id=target_shop_id,
             user_id=current_user.id,
             lotto_type_id=ticket_in.lotto_type_id,
             round_date=target_round_date,
             note=ticket_in.note,
-            total_amount=total_amount, # ยอดรวมนี้จะไม่รวมค่าเลขปิด
+            total_amount=total_amount,
             status=TicketStatus.PENDING
         )
         db.add(new_ticket)
         db.flush() 
 
-        # สร้าง Items
         for p_item in processed_items:
             t_item = TicketItem(
                 ticket_id=new_ticket.id,
+                # lotto_type_id=ticket_in.lotto_type_id,  <-- ❌ ลบบรรทัดนี้ออกครับ!
                 number=p_item["number"],
                 bet_type=p_item["bet_type"],
-                amount=p_item["amount"],      # 0 ถ้าปิด
-                reward_rate=p_item["reward_rate"], # 0 ถ้าปิด
+                amount=p_item["amount"],
+                reward_rate=p_item["reward_rate"],
                 winning_amount=0,
                 status=TicketStatus.PENDING
             )
@@ -841,10 +846,11 @@ def submit_ticket(
 
     except Exception as e:
         db.rollback()
+        print(f"Server Error Details: {str(e)}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"ระบบขัดข้อง: {str(e)}")
-
+    
 # --- Stats & History ---
 @router.get("/stats/range") 
 def get_stats_range(
