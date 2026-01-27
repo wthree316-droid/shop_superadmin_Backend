@@ -5,20 +5,28 @@ from app.core.config import settings
 
 SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
 
-#  เพิ่ม Argument สำหรับจัดการ Connection Pool
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    # 1. pool_pre_ping=True: เช็คก่อนเสมอว่า Connection ยังดีอยู่ไหม ถ้าตายจะต่อใหม่ให้เอง (สำคัญมาก!)
+    # 1. เช็ค Connection ก่อนใช้เสมอ
     pool_pre_ping=True, 
     
-    # 2. pool_size: จำนวน Connection ที่เปิดค้างไว้ (Cloud Run ปกติใช้ 5-10 ก็พอต่อ 1 instance)
+    # 2. Connection Pool Size
     pool_size=10, 
     
-    # 3. max_overflow: ยอมให้เกิน pool_size ได้กี่อันช่วงคนเยอะ
+    # 3. Max Overflow
     max_overflow=20,
     
-    # 4. pool_recycle: รีไซเคิล connection ทุกๆ 1 ชั่วโมง (3600 วิ) ป้องกัน DB ตัดเพราะนานเกิน
-    pool_recycle=3600
+    # ✅ ใช้เป็น 1800 (30 นาที) หรือ 900 (15 นาที) เพื่อความชัวร์
+    pool_recycle=1800, 
+
+    # ✅ บังคับให้ส่งสัญญาณชีพ (Heartbeat) ไปหา Database เรื่อยๆ
+    # ป้องกันไม่ให้ Firewall หรือ Supabase ตัดสายเมื่อไม่มีการใช้งาน
+    connect_args={
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5
+    }
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

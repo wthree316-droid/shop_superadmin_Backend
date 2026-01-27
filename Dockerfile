@@ -23,7 +23,4 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 4. คัดลอกโค้ดทั้งหมด
 COPY . .
 
-# 5. คำสั่งรัน Server (ใช้ PORT จาก Environment)
-# หมายเหตุ: Workers = 1 (สำหรับ Cloud Run ที่ Auto Scale)
-# Threads = 8 (เพื่อรองรับ Concurrency ได้ดีขึ้น)
-CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --threads 8 --timeout 0 app.main:app
+CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --access-logfile - --error-logfile - --timeout 120 app.main:app
