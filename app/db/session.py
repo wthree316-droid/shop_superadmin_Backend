@@ -11,10 +11,10 @@ engine = create_engine(
     pool_pre_ping=True, 
     
     # 2. Connection Pool Size
-    pool_size=10, 
+    pool_size=5,
     
     # 3. Max Overflow
-    max_overflow=20,
+    max_overflow=10,
     
     # ✅ ใช้เป็น 1800 (30 นาที) หรือ 900 (15 นาที) เพื่อความชัวร์
     pool_recycle=1800, 
