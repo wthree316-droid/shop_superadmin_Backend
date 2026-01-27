@@ -4,8 +4,8 @@ from sqlalchemy import func
 from app.api import deps
 from app.db.session import get_db
 from app.models.user import User, UserRole
-from app.models.lotto import Ticket, TicketItem, TicketStatus, LottoResult, NumberRisk
-from app.schemas import RewardRequest, RewardResultResponse, RewardHistoryResponse
+from app.models.lotto import Ticket, TicketItem, TicketStatus, LottoResult, NumberRisk, LottoType
+from app.schemas import RewardRequest, RewardResultResponse
 from app.core.config import get_thai_now
 from decimal import Decimal
 from datetime import date
@@ -39,38 +39,58 @@ def issue_reward(
     
     target_date = data.round_date if data.round_date else get_thai_now().date()
 
-    # 1. บันทึกผลรางวัล
-    existing_result = db.query(LottoResult).filter(
-        LottoResult.lotto_type_id == data.lotto_type_id,
-        LottoResult.round_date == target_date
-    ).first()
+    # 1. ✅ หา "รหัสหวย (Code)" จาก ID ที่ส่งมา
+    source_lotto = db.query(LottoType).get(data.lotto_type_id)
+    if not source_lotto:
+        raise HTTPException(status_code=404, detail="Lotto type not found")
     
-    if existing_result:
-        existing_result.reward_data = {"top": data.top_3, "bottom": data.bottom_2}
-    else:
-        new_result = LottoResult(
-            lotto_type_id=data.lotto_type_id,
-            round_date=target_date,
-            reward_data={"top": data.top_3, "bottom": data.bottom_2}
-        )
-        db.add(new_result)
-    
-    db.commit()
+    target_code = source_lotto.code
 
-    # 2. ดึงข้อมูลเลขอั้น/เลขปิด (Number Risk) มาเตรียมไว้เช็ค Double Check
-    risk_entries = db.query(NumberRisk).filter(
-        NumberRisk.lotto_type_id == data.lotto_type_id
-        # ❌ อย่าใส่ filter(created_at...) เด็ดขาด
+    # 2. ✅ ดึงหวย "ทุกใบในระบบ" ที่มี Code เดียวกัน (ของทุกร้าน)
+    # เพื่อที่เราจะบันทึกผลให้ทุกร้าน และตรวจโพยของทุกร้าน
+    related_lottos = db.query(LottoType).filter(LottoType.code == target_code).all()
+    related_lotto_ids = [l.id for l in related_lottos]
+
+    # 3. ✅ บันทึกผลรางวัลลงใน LottoResult ของ "ทุกร้าน"
+    # (ลบของเก่าออกก่อนกันซ้ำ แล้วใส่ใหม่ หรือ Update ก็ได้)
+    for l_id in related_lotto_ids:
+        existing_result = db.query(LottoResult).filter(
+            LottoResult.lotto_type_id == l_id,
+            LottoResult.round_date == target_date
+        ).first()
+        
+        if existing_result:
+            existing_result.reward_data = {"top": data.top_3, "bottom": data.bottom_2}
+        else:
+            new_result = LottoResult(
+                lotto_type_id=l_id,
+                round_date=target_date,
+                reward_data={"top": data.top_3, "bottom": data.bottom_2}
+            )
+            db.add(new_result)
+    
+    db.commit() # บันทึกผลรางวัลก่อน (สำคัญ)
+
+    # 4. ✅ เตรียมเลขอั้น (Risk) ของ "ทุกร้าน"
+    # ต้องแยก Risk ตาม Lotto ID เพราะร้าน A อาจจะอั้นไม่เหมือนร้าน B
+    all_risks = db.query(NumberRisk).filter(
+        NumberRisk.lotto_type_id.in_(related_lotto_ids)
     ).all()
     
-    risk_lookup = {}
-    for r in risk_entries:
+    # สร้าง Dictionary เก็บ Risk แยกตาม Lotto ID
+    # Format: { lotto_id: { "เลข:ประเภท": "สถานะ" } }
+    risk_map_by_lotto = {}
+    for r in all_risks:
+        lid = r.lotto_type_id
+        if lid not in risk_map_by_lotto:
+            risk_map_by_lotto[lid] = {}
+        
         key = f"{r.number}:{r.specific_bet_type or 'ALL'}"
-        risk_lookup[key] = r.risk_type
+        risk_map_by_lotto[lid][key] = r.risk_type
 
-    # 3. ดึงโพย PENDING มาตรวจ
+    # 5. ✅ ดึงโพย PENDING จาก "ทุกร้าน" ที่เกี่ยวข้องมาตรวจ
     pending_tickets = db.query(Ticket).options(joinedload(Ticket.items)).filter(
-        Ticket.lotto_type_id == data.lotto_type_id,
+        Ticket.lotto_type_id.in_(related_lotto_ids), # เช็ค ID ทั้งหมดในกลุ่มเดียวกัน
         Ticket.round_date == target_date,
         Ticket.status == TicketStatus.PENDING
     ).all()
@@ -89,19 +109,23 @@ def issue_reward(
         is_ticket_win = False
         ticket_payout = Decimal(0)
         
+        # ดึง Risk Map ของหวยใบนี้ (เฉพาะร้านนี้)
+        this_lotto_risk = risk_map_by_lotto.get(ticket.lotto_type_id, {})
+
         for item in ticket.items:
             if item.status == TicketStatus.CANCELLED: continue
 
             # ตรวจรางวัลเบื้องต้น
             is_win = check_is_win(item.bet_type, item.number, data.top_3, data.bottom_2)
             
-            # 🔥 Double Check: ถ้าถูกรางวัล ต้องเช็คด้วยว่าติดเลขอั้น (CLOSE) หรือไม่
+            # 🔥 Double Check: ถ้าถูกรางวัล ต้องเช็คด้วยว่าติดเลขอั้น (CLOSE) ของร้านนั้นๆ หรือไม่
             if is_win:
                 s_key = f"{item.number}:{item.bet_type}"
                 g_key = f"{item.number}:ALL"
-                risk = risk_lookup.get(s_key) or risk_lookup.get(g_key)
                 
-                # ถ้าเจอ CLOSE ให้ปรับเป็นแพ้ทันที (โมฆะรางวัล)
+                # เช็คจาก Map ที่เตรียมไว้
+                risk = this_lotto_risk.get(s_key) or this_lotto_risk.get(g_key)
+                
                 if risk == 'CLOSE':
                     is_win = False
             
