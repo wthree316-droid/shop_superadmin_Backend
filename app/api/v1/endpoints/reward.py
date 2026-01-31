@@ -11,20 +11,10 @@ from decimal import Decimal
 from datetime import date
 from typing import List, Optional, Dict
 from uuid import UUID 
+from app.core.game_logic import check_is_win_precise
 
 router = APIRouter()
 
-def check_is_win(bet_type: str, number: str, top_3: str, bottom_2: str) -> bool:
-    try:
-        if bet_type == '3top':      return number == top_3
-        elif bet_type == '3tod':    return sorted(number) == sorted(top_3)
-        elif bet_type == '2up':     return number == top_3[-2:]
-        elif bet_type == '2down':   return number == bottom_2
-        elif bet_type == 'run_up':  return number in top_3
-        elif bet_type == 'run_down': return number in bottom_2
-        return False
-    except:
-        return False
 
 @router.post("/issue", response_model=RewardResultResponse)
 def issue_reward(
@@ -34,25 +24,23 @@ def issue_reward(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
+    # Security Check
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
     
+    # กำหนดวันที่
     target_date = data.round_date if data.round_date else get_thai_now().date()
 
-    # 1. ✅ หา "รหัสหวย (Code)" จาก ID ที่ส่งมา
+    # 1. หา Code หวย เพื่อดึงหวยประเภทเดียวกันจากทุกร้าน
     source_lotto = db.query(LottoType).get(data.lotto_type_id)
     if not source_lotto:
         raise HTTPException(status_code=404, detail="Lotto type not found")
     
     target_code = source_lotto.code
-
-    # 2. ✅ ดึงหวย "ทุกใบในระบบ" ที่มี Code เดียวกัน (ของทุกร้าน)
-    # เพื่อที่เราจะบันทึกผลให้ทุกร้าน และตรวจโพยของทุกร้าน
     related_lottos = db.query(LottoType).filter(LottoType.code == target_code).all()
     related_lotto_ids = [l.id for l in related_lottos]
 
-    # 3. ✅ บันทึกผลรางวัลลงใน LottoResult ของ "ทุกร้าน"
-    # (ลบของเก่าออกก่อนกันซ้ำ แล้วใส่ใหม่ หรือ Update ก็ได้)
+    # 2. บันทึก/อัปเดตผลรางวัล (LottoResult)
     for l_id in related_lotto_ids:
         existing_result = db.query(LottoResult).filter(
             LottoResult.lotto_type_id == l_id,
@@ -60,89 +48,106 @@ def issue_reward(
         ).first()
         
         if existing_result:
+            existing_result.top_3 = data.top_3
+            existing_result.bottom_2 = data.bottom_2
             existing_result.reward_data = {"top": data.top_3, "bottom": data.bottom_2}
         else:
             new_result = LottoResult(
                 lotto_type_id=l_id,
                 round_date=target_date,
+                top_3=data.top_3,
+                bottom_2=data.bottom_2,
                 reward_data={"top": data.top_3, "bottom": data.bottom_2}
             )
             db.add(new_result)
     
-    db.commit() # บันทึกผลรางวัลก่อน (สำคัญ)
-
-
-    # 5. ✅ ดึงโพย PENDING จาก "ทุกร้าน" ที่เกี่ยวข้องมาตรวจ
-    pending_tickets = db.query(Ticket).options(joinedload(Ticket.items)).filter(
-        Ticket.lotto_type_id.in_(related_lotto_ids), # เช็ค ID ทั้งหมดในกลุ่มเดียวกัน
+    # 3. 🔄 ระบบ Rollback (สำคัญมากสำหรับการแก้ผล)
+    # ดึงบิล "ทั้งหมด" ของรอบนี้ (ไม่สนว่าตรวจไปแล้วหรือยัง ยกเว้นบิลที่ยกเลิก)
+    all_tickets = db.query(Ticket).options(joinedload(Ticket.items)).filter(
+        Ticket.lotto_type_id.in_(related_lotto_ids),
         Ticket.round_date == target_date,
-        Ticket.status == TicketStatus.PENDING
+        Ticket.status != TicketStatus.CANCELLED
     ).all()
 
-    if not pending_tickets:
+    if not all_tickets:
+        db.commit()
         return {"total_tickets_processed": 0, "total_winners": 0, "total_payout": 0}
 
-    item_updates = []         
-    ticket_updates = []       
-    user_updates: Dict[UUID, Decimal] = {}  
-
+    # เตรียมตัวแปรสำหรับสรุปผล
     total_payout = Decimal(0)
     win_count = 0
+    
+    # ตัวแปรเก็บยอดเงินที่จะต้องปรับปรุงให้ User
+    # key = user_id, value = ยอดเงินสุทธิที่จะบวก/ลบ (Decimal)
+    user_balance_adjustments: Dict[UUID, Decimal] = {}
 
-    for ticket in pending_tickets:
+    for ticket in all_tickets:
+        # --- A. Rollback Phase (ดึงเงินคืนถ้าเคยถูกรางวัล) ---
+        if ticket.status == TicketStatus.WON and ticket.winning_amount > 0:
+            current_adj = user_balance_adjustments.get(ticket.user_id, Decimal(0))
+            user_balance_adjustments[ticket.user_id] = current_adj - ticket.winning_amount
+        
+        # รีเซ็ตสถานะบิลเพื่อเตรียมตรวจใหม่
+        ticket.status = TicketStatus.PENDING
+        ticket.winning_amount = 0
+
+        # --- B. Calculation Phase (ตรวจรางวัลใหม่) ---
         is_ticket_win = False
         ticket_payout = Decimal(0)
 
         for item in ticket.items:
+            # รีเซ็ตสถานะรายการย่อย
             if item.status == TicketStatus.CANCELLED: continue
-
-            # ตรวจรางวัลเบื้องต้น
-            is_win = check_is_win(item.bet_type, item.number, data.top_3, data.bottom_2)
             
-                
-            # คำนวณเงิน
-            item_payout = Decimal(0)
+            # ตรวจรางวัล
+            is_win = check_is_win_precise(
+                item.bet_type, 
+                item.number, 
+                data.top_3, 
+                data.bottom_2
+            )
+
             if is_win:
                 item_payout = item.amount * item.reward_rate
+                item.status = TicketStatus.WIN
+                item.winning_amount = item_payout
+                
                 ticket_payout += item_payout
                 is_ticket_win = True
+            else:
+                item.status = TicketStatus.LOSE
+                item.winning_amount = 0
 
-            item_status = TicketStatus.WIN if is_win else TicketStatus.LOSE
-            item_updates.append({
-                "id": item.id, 
-                "status": item_status, 
-                "winning_amount": item_payout
-            })
-        
-        ticket_status = TicketStatus.WIN if is_ticket_win else TicketStatus.LOSE
-        ticket_updates.append({"id": ticket.id, "status": ticket_status})
-
+        # อัปเดตสถานะบิลหลังตรวจเสร็จ
         if is_ticket_win:
+            ticket.status = TicketStatus.WON
+            ticket.winning_amount = ticket_payout
             win_count += 1
             total_payout += ticket_payout
-            current_val = user_updates.get(ticket.user_id, Decimal(0))
-            user_updates[ticket.user_id] = current_val + ticket_payout
+            
+            # เพิ่มยอดเงินรางวัลใหม่เข้าไปในรายการปรับปรุง
+            current_adj = user_balance_adjustments.get(ticket.user_id, Decimal(0))
+            user_balance_adjustments[ticket.user_id] = current_adj + ticket_payout
+        else:
+            ticket.status = TicketStatus.LOSE
+            ticket.winning_amount = 0
 
-    # Execute Update
-    try:
-        if item_updates: db.bulk_update_mappings(TicketItem, item_updates)
-        if ticket_updates: db.bulk_update_mappings(Ticket, ticket_updates)
-        for uid, amount in user_updates.items():
-            db.query(User).filter(User.id == uid).update(
-                {User.credit_balance: User.credit_balance + amount}, synchronize_session=False
-            )
-        db.commit() 
+    # 4. บันทึกการเปลี่ยนแปลงเงิน User
+    for uid, amount in user_balance_adjustments.items():
+        if amount != 0:
+            user = db.query(User).filter(User.id == uid).first()
+            if user:
+                user.credit_balance += amount
+                # บันทึก log การเงินเพิ่มเติมตรงนี้ได้ถ้ามีตาราง transaction
 
-        return {
-            "total_tickets_processed": len(pending_tickets),
-            "total_winners": win_count,
-            "total_payout": total_payout
-        }
+    db.commit()
 
-    except Exception as e:
-        db.rollback()
-        print(f"Error issuing reward: {e}")
-        raise HTTPException(status_code=500, detail="เกิดข้อผิดพลาดในการคำนวณรางวัล")
+    return {
+        "success": True,
+        "total_tickets_processed": len(all_tickets),
+        "total_winners": win_count,
+        "total_payout": total_payout
+    }
 
 
 @router.get("/daily") 
@@ -157,8 +162,8 @@ def get_daily_rewards(
     
     return {
         str(r.lotto_type_id): {
-            "top_3": r.reward_data.get("top") if r.reward_data else "", 
-            "bottom_2": r.reward_data.get("bottom") if r.reward_data else "",
+            "top_3": r.top_3 or (r.reward_data.get("top") if r.reward_data else ""), 
+            "bottom_2": r.bottom_2 or (r.reward_data.get("bottom") if r.reward_data else ""),
             "created_at": r.created_at
         } 
         for r in results
@@ -178,8 +183,8 @@ def get_reward_history(
     return [
         {
             "round_date": r.round_date,
-            "top_3": r.reward_data.get("top") if r.reward_data else "",
-            "bottom_2": r.reward_data.get("bottom") if r.reward_data else ""
+            "top_3": r.top_3 or (r.reward_data.get("top") if r.reward_data else ""),
+            "bottom_2": r.bottom_2 or (r.reward_data.get("bottom") if r.reward_data else "")
         }
         for r in results
     ]

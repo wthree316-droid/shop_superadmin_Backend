@@ -538,7 +538,6 @@ def create_bulk_risks(
     # Default คือเวลาปัจจุบัน
     risk_created_at = datetime.utcnow()
     # ถ้ามีการส่งวันที่มา (YYYY-MM-DD) ให้ใช้เวลานั้น (แปลงเป็น UTC 00:00 ไทย)
-    # สูตร: วันที่เลือก 00:00 น. - 7 ชั่วโมง = UTC ของวันนั้น
     if hasattr(payload, 'date') and payload.date:
         try:
             target_date = datetime.strptime(payload.date, "%Y-%m-%d").date()
@@ -549,7 +548,6 @@ def create_bulk_risks(
     try:
         for item in payload.items:
             # เช็คว่ามีอยู่แล้วไหม (ในวันเดียวกัน)
-            # เราเช็คช่วงเวลาของวันนั้นๆ
             start_of_day = risk_created_at
             end_of_day = risk_created_at + timedelta(days=1)
 
@@ -568,8 +566,7 @@ def create_bulk_risks(
                     specific_bet_type=item.specific_bet_type,
                     risk_type=payload.risk_type,
                     shop_id=current_user.shop_id,
-                    created_at=risk_created_at # ✅ บันทึกวันที่ที่ถูกต้อง
-                    # created_by=current_user.id ❌ เอาออกก่อน เพื่อแก้ Error 500 (ถ้า DB ไม่มี col นี้)
+                    created_at=risk_created_at
                 )
                 db.add(new_risk)
                 count += 1
@@ -582,8 +579,48 @@ def create_bulk_risks(
 
     except Exception as e:
         db.rollback()
-        print(f"Bulk Risk Error: {e}") # ดู Log ได้ชัดเจนขึ้น
+        print(f"Bulk Risk Error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
+@router.delete("/risks/clear")
+def clear_risks_by_date(
+    lotto_id: UUID,
+    date: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # Security Check
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        # แปลงวันที่
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        start_utc = datetime.combine(target_date, time.min) - timedelta(hours=7)
+        end_utc = datetime.combine(target_date, time.max) - timedelta(hours=7)
+
+        # ลบข้อมูลทีเดียว (Bulk Delete)
+        stmt = db.query(NumberRisk).filter(
+            NumberRisk.lotto_type_id == lotto_id,
+            NumberRisk.created_at >= start_utc,
+            NumberRisk.created_at <= end_utc
+        )
+        
+        # ถ้าเป็น Admin ร้าน ลบได้แค่ของร้านตัวเอง
+        if current_user.role == UserRole.admin:
+            stmt = stmt.filter(NumberRisk.shop_id == current_user.shop_id)
+
+        deleted_count = stmt.delete(synchronize_session=False)
+        
+        db.commit()
+        invalidate_cache(str(lotto_id)) # เคลียร์ Cache
+        
+        return {"status": "success", "deleted": deleted_count}
+
+    except Exception as e:
+        db.rollback()
+        print(f"Clear Risk Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error clearing risks: {str(e)}")
 
 @router.get("/risks/{lotto_id}", response_model=List[NumberRiskResponse])
 def get_risks(
@@ -679,14 +716,20 @@ def submit_ticket(
     if not lotto:
         raise HTTPException(status_code=404, detail="ไม่พบประเภทหวย")
     
-    # 3. คำนวณงวดวันที่
+    # 3. ✅ [แก้ไข] คำนวณงวดวันที่ (รองรับหวยรายวัน/รายสัปดาห์/เปิดบางวัน)
     now_thai = get_thai_now()
-    target_round_date = now_thai.date()
+    target_round_date = now_thai.date() # Default ไว้ก่อน
     
     rules = lotto.rules if lotto.rules else {} 
     schedule_type = rules.get('schedule_type', 'weekly')
 
+    # เตรียม Map วัน (0=จันทร์, ..., 6=อาทิตย์)
+    day_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+    # ดึงวันเปิดรับจาก DB (ถ้าไม่มีให้ถือว่าเปิดทุกวัน)
+    allowed_days = [day_map[d] for d in lotto.open_days] if lotto.open_days else [0,1,2,3,4,5,6]
+
     if schedule_type == 'monthly':
+        # --- Logic หวยรายเดือน (คงเดิม) ---
         close_dates = rules.get('close_dates', [1, 16])
         target_dates = sorted([int(d) for d in close_dates])
         current_day = now_thai.day
@@ -715,16 +758,42 @@ def submit_ticket(
         else:
             target_round_date = date(now_thai.year, now_thai.month, found_date)
     else:
-        if lotto.close_time:
-            try:
-                time_str = str(lotto.close_time)
-                if len(time_str) == 5: time_str += ":00"
-                close_h, close_m, _ = map(int, time_str.split(':'))
-                close_dt = now_thai.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-                if now_thai > close_dt:
-                    target_round_date = target_round_date + timedelta(days=1)
-            except:
-                pass
+        # --- ✅ Logic ใหม่: วนลูปหารอบถัดไป (สำหรับหวยรายวัน/รายสัปดาห์) ---
+        check_date = now_thai.date()
+        found = False
+        
+        # วนลูปหาล่วงหน้าไม่เกิน 30 วัน (ป้องกัน Loop ตาย)
+        for i in range(30): 
+            # 3.1 เช็คว่าวันที่ตรวจสอบ ตรงกับวันเปิดรับไหม?
+            if check_date.weekday() in allowed_days:
+                # 3.2 ถ้าเป็น "วันปัจจุบัน" (i=0) ต้องเช็คเวลาปิดด้วย
+                if i == 0 and lotto.close_time:
+                    try:
+                        time_str = str(lotto.close_time)
+                        if len(time_str) == 5: time_str += ":00"
+                        close_h, close_m, _ = map(int, time_str.split(':'))
+                        close_dt = now_thai.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+                        
+                        # ถ้ายังไม่ถึงเวลาปิด -> จองรอบนี้เลย
+                        if now_thai <= close_dt:
+                            target_round_date = check_date
+                            found = True
+                            break
+                        # ถ้าเลยเวลาปิดแล้ว -> ปล่อยผ่านไป Loop รอบหน้า (วันถัดไป)
+                    except:
+                        pass
+                else:
+                    # ถ้าเป็นวันอนาคต และตรงวันเปิดรับ -> จองรอบนี้เลย
+                    target_round_date = check_date
+                    found = True
+                    break
+            
+            # บวกเพิ่ม 1 วันแล้ววน Loop ใหม่
+            check_date = check_date + timedelta(days=1)
+        
+        if not found:
+             # กรณีฉุกเฉินหาไม่เจอจริงๆ ใช้วันนี้ (Fail safe)
+             target_round_date = now_thai.date()
 
     # 4. เตรียมเลขอั้น (Risk)
     r_start = datetime.combine(target_round_date, time.min) - timedelta(hours=7)
@@ -830,7 +899,7 @@ def submit_ticket(
         for p_item in processed_items:
             t_item = TicketItem(
                 ticket_id=new_ticket.id,
-                # lotto_type_id=ticket_in.lotto_type_id,  <-- ❌ ลบบรรทัดนี้ออกครับ!
+                # lotto_type_id ตัดออกแล้ว ถูกต้องครับ
                 number=p_item["number"],
                 bet_type=p_item["bet_type"],
                 amount=p_item["amount"],

@@ -43,7 +43,7 @@ class LottoType(Base):
     api_link = Column(String, nullable=True)    # [ใหม่] API Link
     open_days = Column(JSON, default=[])        # [ใหม่] วันที่เปิดรับ ["MON", "TUE"]
     
-        #  เพื่อระบุเจ้าของหวย
+    #  เพื่อระบุเจ้าของหวย
     shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True) 
     
     #  ถ้าเป็น True คือแม่แบบ (SuperAdmin สร้าง) ถ้า False คือหวยจริงที่เปิดเล่น
@@ -53,8 +53,6 @@ class LottoType(Base):
     rate_profile_id = Column(UUID(as_uuid=True), ForeignKey("rate_profiles.id"), nullable=True)
     rate_profile = relationship("RateProfile", back_populates="lottos")
     rules = Column(JSON, default={})
-
-
 
     # Relationship
     shop = relationship("Shop", backref="lottos")
@@ -98,10 +96,15 @@ class LottoResult(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     lotto_type_id = Column(UUID(as_uuid=True), ForeignKey("lotto_types.id"), nullable=False)
     round_date = Column(Date, nullable=False)
-    reward_data = Column(JSON, nullable=False) # เก็บ top, bottom, etc.
+    
+    # ✅ [เพิ่ม] คอลัมน์สำหรับเก็บเลข 3 ตัวบน และ 2 ตัวล่าง (Reward.py เรียกใช้ตัวนี้)
+    top_3 = Column(String, nullable=True)
+    bottom_2 = Column(String, nullable=True)
+    
+    reward_data = Column(JSON, nullable=False) # เก็บ JSON รวม (เผื่ออนาคต)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationship (เผื่ออยากดึงว่าผลนี้เป็นของหวยอะไร)
+    # Relationship
     lotto_type = relationship("LottoType")
 
     __table_args__ = (
@@ -117,7 +120,7 @@ class NumberRisk(Base):
     shop_id = Column(UUID(as_uuid=True), nullable=True)
     number = Column(String, nullable=False)  # เลขที่อั้น เช่น "59", "123"
     risk_type = Column(String, nullable=False) # CLOSE=ปิดรับ, HALF=จ่ายครึ่ง
-    specific_bet_type: str = Column(String, default="ALL") # ค่าที่เป็นไปได้: 'ALL', '2up', '2down', '3top', '3tod', 'run_up', 'run_down'
+    specific_bet_type = Column(String, default="ALL") # แก้ type hint เป็น Column ปกติ
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationship กลับไปหาหวย (Optional)
@@ -130,5 +133,4 @@ class LottoCategory(Base):
     color = Column(String, default="bg-gray-100 text-gray-700") # สีปุ่ม (Tailwind Class)
     shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True) # ผูกกับร้านค้า
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    order_index = Column(Integer, default=+10)
-    
+    order_index = Column(Integer, default=10)
