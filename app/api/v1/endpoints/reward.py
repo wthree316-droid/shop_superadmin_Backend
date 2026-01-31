@@ -82,14 +82,16 @@ def issue_reward(
 
     for ticket in all_tickets:
         # --- A. Rollback Phase (ดึงเงินคืนถ้าเคยถูกรางวัล) ---
-        # ✅ แก้ไขจุดที่ Error: เปลี่ยน .WON เป็น .WIN
-        if ticket.status == TicketStatus.WIN and ticket.winning_amount > 0:
+        # ✅ แก้ไข: คำนวณยอดเงินรางวัลเดิมจาก TicketItem แทน (เพราะ Ticket ไม่มี field winning_amount)
+        prev_win_amount = sum(item.winning_amount or 0 for item in ticket.items if item.status == TicketStatus.WIN)
+        
+        if ticket.status == TicketStatus.WIN and prev_win_amount > 0:
             current_adj = user_balance_adjustments.get(ticket.user_id, Decimal(0))
-            user_balance_adjustments[ticket.user_id] = current_adj - ticket.winning_amount
+            user_balance_adjustments[ticket.user_id] = current_adj - prev_win_amount
         
         # รีเซ็ตสถานะบิลเพื่อเตรียมตรวจใหม่
         ticket.status = TicketStatus.PENDING
-        ticket.winning_amount = 0
+        # ไม่ต้อง reset ticket.winning_amount เพราะไม่มี column นี้
 
         # --- B. Calculation Phase (ตรวจรางวัลใหม่) ---
         is_ticket_win = False
@@ -109,22 +111,21 @@ def issue_reward(
 
             if is_win:
                 item_payout = item.amount * item.reward_rate
-                # ✅ แก้ไข: เปลี่ยน .WON เป็น .WIN
+                
                 item.status = TicketStatus.WIN
                 item.winning_amount = item_payout
                 
                 ticket_payout += item_payout
                 is_ticket_win = True
             else:
-                # ✅ แก้ไข: เปลี่ยน .LOST เป็น .LOSE
                 item.status = TicketStatus.LOSE
                 item.winning_amount = 0
 
         # อัปเดตสถานะบิลหลังตรวจเสร็จ
         if is_ticket_win:
-            # ✅ แก้ไข: เปลี่ยน .WON เป็น .WIN
             ticket.status = TicketStatus.WIN
-            ticket.winning_amount = ticket_payout
+            # ไม่ต้อง save ticket.winning_amount
+            
             win_count += 1
             total_payout += ticket_payout
             
@@ -132,9 +133,8 @@ def issue_reward(
             current_adj = user_balance_adjustments.get(ticket.user_id, Decimal(0))
             user_balance_adjustments[ticket.user_id] = current_adj + ticket_payout
         else:
-            # ✅ แก้ไข: เปลี่ยน .LOST เป็น .LOSE
             ticket.status = TicketStatus.LOSE
-            ticket.winning_amount = 0
+            # ไม่ต้อง save ticket.winning_amount
 
     # 4. บันทึกการเปลี่ยนแปลงเงิน User
     for uid, amount in user_balance_adjustments.items():
