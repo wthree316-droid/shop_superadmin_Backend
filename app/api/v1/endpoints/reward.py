@@ -15,7 +15,6 @@ from app.core.game_logic import check_is_win_precise
 
 router = APIRouter()
 
-
 @router.post("/issue", response_model=RewardResultResponse)
 def issue_reward(
     data: RewardRequest,
@@ -83,7 +82,8 @@ def issue_reward(
 
     for ticket in all_tickets:
         # --- A. Rollback Phase (ดึงเงินคืนถ้าเคยถูกรางวัล) ---
-        if ticket.status == TicketStatus.WON and ticket.winning_amount > 0:
+        # ✅ แก้ไขจุดที่ Error: เปลี่ยน .WON เป็น .WIN
+        if ticket.status == TicketStatus.WIN and ticket.winning_amount > 0:
             current_adj = user_balance_adjustments.get(ticket.user_id, Decimal(0))
             user_balance_adjustments[ticket.user_id] = current_adj - ticket.winning_amount
         
@@ -109,18 +109,21 @@ def issue_reward(
 
             if is_win:
                 item_payout = item.amount * item.reward_rate
+                # ✅ แก้ไข: เปลี่ยน .WON เป็น .WIN
                 item.status = TicketStatus.WIN
                 item.winning_amount = item_payout
                 
                 ticket_payout += item_payout
                 is_ticket_win = True
             else:
+                # ✅ แก้ไข: เปลี่ยน .LOST เป็น .LOSE
                 item.status = TicketStatus.LOSE
                 item.winning_amount = 0
 
         # อัปเดตสถานะบิลหลังตรวจเสร็จ
         if is_ticket_win:
-            ticket.status = TicketStatus.WON
+            # ✅ แก้ไข: เปลี่ยน .WON เป็น .WIN
+            ticket.status = TicketStatus.WIN
             ticket.winning_amount = ticket_payout
             win_count += 1
             total_payout += ticket_payout
@@ -129,6 +132,7 @@ def issue_reward(
             current_adj = user_balance_adjustments.get(ticket.user_id, Decimal(0))
             user_balance_adjustments[ticket.user_id] = current_adj + ticket_payout
         else:
+            # ✅ แก้ไข: เปลี่ยน .LOST เป็น .LOSE
             ticket.status = TicketStatus.LOSE
             ticket.winning_amount = 0
 
