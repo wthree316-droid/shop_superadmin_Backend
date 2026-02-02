@@ -273,6 +273,30 @@ def delete_category(
     
     return {"status": "success", "message": "ลบหมวดหมู่เรียบร้อยแล้ว"}
 
+# -------------------------------------------------------------------
+# ✅ [เพิ่มใหม่] ดึงข้อมูลแม่แบบ (ต้องวางไว้ก่อน get_lotto_detail)
+# -------------------------------------------------------------------
+@router.get("/lottos/templates", response_model=List[LottoResponse])
+def get_lotto_templates(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # อนุญาตเฉพาะ Admin / Superadmin
+    if current_user.role not in [UserRole.superadmin, UserRole.admin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # ดึงเฉพาะที่เป็น Template (is_template = True)
+    query = db.query(LottoType).filter(LottoType.is_template == True)
+    
+    # ถ้าเป็น Admin ร้าน ให้เห็น Template ของตัวเอง + ของระบบกลาง (Shop ID = None)
+    if current_user.role == UserRole.admin:
+        query = query.filter(
+            (LottoType.shop_id == current_user.shop_id) | 
+            (LottoType.shop_id == None)
+        )
+        
+    return query.all()
+
 # --- Lottos ---
 @router.get("/lottos", response_model=List[LottoResponse])
 def get_lottos(
