@@ -200,7 +200,7 @@ class RateProfileResponse(BaseModel):
 class LottoCreate(BaseModel):
     name: str
     code: str
-    category: str = "GENERAL"
+    category: Optional[str] = None
     rate_profile_id: Optional[UUID] = None
     img_url: Optional[str] = None
     open_time: Optional[str] = None   
