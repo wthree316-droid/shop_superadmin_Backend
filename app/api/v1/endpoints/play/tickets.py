@@ -247,65 +247,34 @@ def cancel_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
+    # กรณี Member ขอยกเลิกเอง (ปลดล็อคให้เหมือน Admin)
     if current_user.role == UserRole.member:
         if ticket.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="Not your ticket")
-        
-        # เช็คเวลาปิดรับก่อนยกเลิก (รองรับข้ามวัน)
-        if ticket.lotto_type.close_time:
-            try:
-                now_thai = get_thai_now()
-                now_time = now_thai.time()
-                close_val = ticket.lotto_type.close_time
-                open_val = ticket.lotto_type.open_time
-                
-                # Parse close time
-                if isinstance(close_val, str):
-                    if len(close_val) == 5: close_val += ":00"
-                    close_obj = datetime.strptime(close_val, "%H:%M:%S").time()
-                else:
-                    close_obj = close_val
-                
-                # Parse open time
-                open_obj = None
-                if open_val:
-                    if isinstance(open_val, str):
-                        if len(open_val) == 5: open_val += ":00"
-                        open_obj = datetime.strptime(open_val, "%H:%M:%S").time()
-                    else:
-                        open_obj = open_val
-                
-                # ตรวจสอบว่าหวยข้ามวันหรือไม่
-                is_overnight = False
-                if open_obj and close_obj:
-                    if close_obj < open_obj:
-                        is_overnight = True
-                
-                # ตรวจสอบว่าปิดรับแล้วหรือยัง
-                if is_overnight:
-                    # กรณีข้ามวัน: ปิดรับเมื่อเวลาอยู่นอกช่วง [เวลาเปิด, 23:59] และ [00:00, เวลาปิด]
-                    if not (now_time >= open_obj or now_time <= close_obj):
-                        raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกได้: หวยปิดรับแล้ว")
-                else:
-                    # กรณีปกติ
-                    if close_obj and now_time > close_obj:
-                        raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกได้: หวยปิดรับแล้ว")
-            except ValueError:
-                pass
+        # ไม่มีการเช็คเวลา หรือเช็ค status PENDING แล้ว (Member ยกเลิกได้ตลอดเวลา)
 
-    elif current_user.role == UserRole.admin:
-        if ticket.shop_id != current_user.shop_id:
+    # กรณี Admin/SuperAdmin
+    elif current_user.role == UserRole.admin or current_user.role == UserRole.superadmin:
+        if current_user.role == UserRole.admin and ticket.shop_id != current_user.shop_id:
             raise HTTPException(status_code=403, detail="Cross-shop action denied")
-    
-    if ticket.status != TicketStatus.PENDING:
-        raise HTTPException(status_code=400, detail=f"Cannot cancel ticket in {ticket.status} status")
 
     try:
-        refund_amount = ticket.total_amount
-        ticket.user.credit_balance += refund_amount
+        # คำนวณเงินที่จะคืนและเงินที่จะดึงกลับ
+        refund_amount = Decimal(ticket.total_amount)
+        reclaim_reward = Decimal(0)
+
+        # ถ้าบิลเคยถูกรางวัลและจ่ายเงินไปแล้ว ต้องดึงเงินรางวัลคืน
+        if ticket.status == TicketStatus.WIN:
+            for item in ticket.items:
+                if item.winning_amount and item.winning_amount > 0:
+                    reclaim_reward += Decimal(item.winning_amount)
+        
+        # อัพเดทเครดิต: คืนค่าโพย - เงินรางวัลที่ต้องดึงคืน
+        net_change = refund_amount - reclaim_reward
+        ticket.user.credit_balance += net_change
         
         actor = f"{current_user.username} ({current_user.role.value})"
-        ticket.note = f"{ticket.note or ''} [Cancelled by {actor}]"
+        ticket.note = f"{ticket.note or ''} [Cancelled by {actor}] (Refund: {refund_amount}, Reclaim: {reclaim_reward})"
         
         ticket.status = TicketStatus.CANCELLED
         for item in ticket.items:
@@ -313,7 +282,13 @@ def cancel_ticket(
             item.winning_amount = 0
 
         db.commit()
-        return {"status": "success", "message": "Ticket cancelled", "refunded": refund_amount}
+        return {
+            "status": "success", 
+            "message": "Ticket cancelled", 
+            "refunded_cost": refund_amount,
+            "reclaimed_reward": reclaim_reward,
+            "net_credit_change": net_change
+        }
 
     except Exception as e:
         db.rollback()
