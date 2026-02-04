@@ -332,3 +332,38 @@ def adjust_credit(
     db.refresh(member)
     
     return member
+
+# ✅ เพิ่ม Endpoint ใหม่สำหรับ Toggle Status
+@router.patch("/{user_id}/toggle-status")
+def toggle_user_status(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # 1. Security Check
+    if current_user.role not in [UserRole.admin, UserRole.superadmin]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # 2. Find User
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 3. Check Ownership (Admin can only toggle own members)
+    if current_user.role == UserRole.admin:
+        if user.shop_id != current_user.shop_id:
+            raise HTTPException(status_code=403, detail="Cannot modify user from another shop")
+        if user.role != UserRole.member:
+            raise HTTPException(status_code=403, detail="Admins can only toggle members")
+
+    # 4. Toggle Status
+    user.is_active = not user.is_active
+    
+    # ถ้าเปิดใช้งาน ให้รีเซ็ตค่า failed_attempts ด้วย
+    if user.is_active:
+        user.failed_attempts = 0
+        user.locked_until = None
+
+    db.commit()
+    
+    return {"status": "success", "is_active": user.is_active, "message": "User status updated"}
