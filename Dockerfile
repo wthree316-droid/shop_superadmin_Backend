@@ -23,4 +23,5 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 4. คัดลอกโค้ดทั้งหมด
 COPY . .
 
-CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --access-logfile - --error-logfile - --timeout 120 app.main:app
+# ปรับ Workers เป็น 2 ตามคำแนะนำสำหรับ spec 1 vCPU / 1 GB RAM
+CMD exec gunicorn --bind :$PORT --workers 2 --worker-class uvicorn.workers.UvicornWorker --access-logfile - --error-logfile - --timeout 120 app.main:app

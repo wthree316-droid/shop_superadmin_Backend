@@ -11,7 +11,7 @@ from app.schemas import TicketCreate, TicketResponse
 from app.db.session import get_db
 from app.models.lotto import Ticket, TicketItem, LottoType, TicketStatus, NumberRisk
 from app.models.user import User, UserRole
-from app.core.config import get_thai_now
+from app.core.config import get_thai_now, get_round_date, settings
 
 router = APIRouter()
 
@@ -40,8 +40,10 @@ def submit_ticket(
     today_date = now_thai.date()
     now_time = now_thai.time()
 
-    # 3. ตรวจสอบเวลาปิด (Strict Check)
+    # 3. ตรวจสอบเวลาปิด (Strict Check) รองรับข้ามวัน
     close_time_obj = None
+    open_time_obj = None
+    
     if lotto.close_time:
         try:
             t_str = str(lotto.close_time)
@@ -49,25 +51,54 @@ def submit_ticket(
             close_time_obj = datetime.strptime(t_str, "%H:%M:%S").time()
         except:
             pass
+    
+    if lotto.open_time:
+        try:
+            o_str = str(lotto.open_time)
+            if len(o_str) == 5: o_str += ":00"
+            open_time_obj = datetime.strptime(o_str, "%H:%M:%S").time()
+        except:
+            pass
 
     day_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
     allowed_days = [day_map[d] for d in (lotto.open_days or [])]
     is_today_open = today_date.weekday() in allowed_days
 
+    # ตรวจสอบว่าหวยข้ามวันหรือไม่ (เช่น เปิด 08:00 ปิด 00:10)
+    is_overnight = False
+    if open_time_obj and close_time_obj:
+        # ถ้าเวลาปิด < เวลาเปิด แสดงว่าข้ามวัน
+        if close_time_obj < open_time_obj:
+            is_overnight = True
+    
     # ถ้าวันนี้เปิด แต่เลยเวลาปิด -> Error
     if is_today_open and close_time_obj:
-        if now_time > close_time_obj:
-             raise HTTPException(
-                 status_code=400, 
-                 detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)"
-             )
+        if is_overnight:
+            # กรณีข้ามวัน: ปิดรับเมื่อ เวลา >= เวลาเปิด และเวลา > เวลาปิด
+            # หรือ เวลา < เวลาเปิด และเวลา > เวลาปิด
+            # ให้เปิดรับได้ถ้า: เวลา >= เวลาเปิด หรือ เวลา <= เวลาปิด
+            if not (now_time >= open_time_obj or now_time <= close_time_obj):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)"
+                )
+        else:
+            # กรณีปกติ (ไม่ข้ามวัน)
+            if now_time > close_time_obj:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)"
+                )
 
-    # 4. คำนวณงวด
+    # 4. คำนวณงวด (รองรับการตัดรอบวันใหม่)
     rules = lotto.rules if lotto.rules else {} 
     schedule_type = rules.get('schedule_type', 'weekly')
-    target_round_date = today_date
+    
+    # ใช้ get_round_date() เพื่อคำนวณงวดที่ถูกต้องตามเวลาตัดรอบ
+    target_round_date = get_round_date(now_thai, settings.DAY_CUTOFF_TIME)
 
     if schedule_type == 'monthly':
+        # สำหรับหวยรายเดือน (เช่น หวยรัฐบาล)
         close_dates = rules.get('close_dates', [1, 16])
         target_dates = sorted([int(d) for d in close_dates])
         current_day = now_thai.day
@@ -88,9 +119,10 @@ def submit_ticket(
         else:
              target_round_date = date(now_thai.year, now_thai.month, found_date)
     else:
+        # สำหรับหวยรายวัน (weekly/daily)
         if not is_today_open:
              raise HTTPException(status_code=400, detail="วันนี้ไม่มีรอบเปิดรับแทง")
-        target_round_date = today_date
+        # target_round_date ถูกคำนวณจาก get_round_date() แล้วด้านบน
 
     # 5. ตรวจเลขอั้น
     r_start = datetime.combine(target_round_date, time.min) - timedelta(hours=7)
@@ -219,20 +251,45 @@ def cancel_ticket(
         if ticket.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="Not your ticket")
         
-        # เช็คเวลาปิดรับก่อนยกเลิก
+        # เช็คเวลาปิดรับก่อนยกเลิก (รองรับข้ามวัน)
         if ticket.lotto_type.close_time:
             try:
-                now_thai = datetime.utcnow() + timedelta(hours=7)
+                now_thai = get_thai_now()
                 now_time = now_thai.time()
                 close_val = ticket.lotto_type.close_time
+                open_val = ticket.lotto_type.open_time
+                
+                # Parse close time
                 if isinstance(close_val, str):
                     if len(close_val) == 5: close_val += ":00"
                     close_obj = datetime.strptime(close_val, "%H:%M:%S").time()
                 else:
                     close_obj = close_val
-
-                if close_obj and now_time > close_obj:
-                    raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกได้: หวยปิดรับแล้ว")
+                
+                # Parse open time
+                open_obj = None
+                if open_val:
+                    if isinstance(open_val, str):
+                        if len(open_val) == 5: open_val += ":00"
+                        open_obj = datetime.strptime(open_val, "%H:%M:%S").time()
+                    else:
+                        open_obj = open_val
+                
+                # ตรวจสอบว่าหวยข้ามวันหรือไม่
+                is_overnight = False
+                if open_obj and close_obj:
+                    if close_obj < open_obj:
+                        is_overnight = True
+                
+                # ตรวจสอบว่าปิดรับแล้วหรือยัง
+                if is_overnight:
+                    # กรณีข้ามวัน: ปิดรับเมื่อเวลาอยู่นอกช่วง [เวลาเปิด, 23:59] และ [00:00, เวลาปิด]
+                    if not (now_time >= open_obj or now_time <= close_obj):
+                        raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกได้: หวยปิดรับแล้ว")
+                else:
+                    # กรณีปกติ
+                    if close_obj and now_time > close_obj:
+                        raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกได้: หวยปิดรับแล้ว")
             except ValueError:
                 pass
 
@@ -270,6 +327,7 @@ def read_history(
     date: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    status: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
@@ -303,6 +361,10 @@ def read_history(
 
     if lotto_type_id:
         query = query.filter(Ticket.lotto_type_id == lotto_type_id)
+    
+    # กรองตามสถานะ (ถ้ามีการระบุ)
+    if status and status != 'ALL':
+        query = query.filter(Ticket.status == status)
 
     return query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
 

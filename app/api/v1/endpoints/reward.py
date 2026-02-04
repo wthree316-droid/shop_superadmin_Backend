@@ -6,7 +6,7 @@ from app.db.session import get_db
 from app.models.user import User, UserRole
 from app.models.lotto import Ticket, TicketItem, TicketStatus, LottoResult, NumberRisk, LottoType
 from app.schemas import RewardRequest, RewardResultResponse, RewardHistoryResponse
-from app.core.config import get_thai_now
+from app.core.config import get_thai_now, get_round_date, settings
 from decimal import Decimal
 from datetime import date
 from typing import List, Optional, Dict
@@ -27,8 +27,13 @@ def issue_reward(
     if current_user.role not in [UserRole.superadmin, UserRole.admin]:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # กำหนดวันที่
-    target_date = data.round_date if data.round_date else get_thai_now().date()
+    # กำหนดวันที่ (ใช้ get_round_date เพื่อคำนวณงวดที่ถูกต้องตามเวลาตัดรอบ)
+    if data.round_date:
+        target_date = data.round_date
+    else:
+        # ถ้าไม่ได้ระบุ ให้ใช้วันที่งวดปัจจุบันตามเวลาตัดรอบ
+        now_thai = get_thai_now()
+        target_date = get_round_date(now_thai, settings.DAY_CUTOFF_TIME)
 
     # 1. หา Code หวย เพื่อดึงหวยประเภทเดียวกันจากทุกร้าน
     source_lotto = db.query(LottoType).get(data.lotto_type_id)
