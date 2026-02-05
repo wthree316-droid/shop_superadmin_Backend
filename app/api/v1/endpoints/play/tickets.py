@@ -247,16 +247,18 @@ def cancel_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    # กรณี Member ขอยกเลิกเอง (ปลดล็อคให้เหมือน Admin)
-    if current_user.role == UserRole.member:
-        if ticket.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not your ticket")
-        # ไม่มีการเช็คเวลา หรือเช็ค status PENDING แล้ว (Member ยกเลิกได้ตลอดเวลา)
-
-    # กรณี Admin/SuperAdmin
-    elif current_user.role == UserRole.admin or current_user.role == UserRole.superadmin:
-        if current_user.role == UserRole.admin and ticket.shop_id != current_user.shop_id:
+    # ตรวจสอบสิทธิ์การยกเลิก:
+    # 1. Superadmin ยกเลิกได้ทุกอย่าง
+    # 2. Admin หรือ Member ยกเลิกได้เฉพาะใน Shop ตัวเอง (Member สามารถยกเลิกบิลของคนอื่นใน Shop ได้ตาม requirement)
+    
+    if current_user.role == UserRole.superadmin:
+        pass
+    elif current_user.role in [UserRole.admin, UserRole.member]:
+        # ต้องเป็นร้านเดียวกันเท่านั้น
+        if ticket.shop_id != current_user.shop_id:
             raise HTTPException(status_code=403, detail="Cross-shop action denied")
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
         # คำนวณเงินที่จะคืนและเงินที่จะดึงกลับ
