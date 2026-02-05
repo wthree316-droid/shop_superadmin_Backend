@@ -299,7 +299,7 @@ def cancel_ticket(
 @router.get("/history", response_model=List[TicketResponse])
 def read_history(
     skip: int = 0,
-    limit: int = 30,
+    limit: int = 100,
     lotto_type_id: Optional[UUID] = None,
     date: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -348,7 +348,7 @@ def read_history(
 @router.get("/shop_history", response_model=List[TicketResponse])
 def get_shop_tickets(
     skip: int = 0,
-    limit: int = 30,
+    limit: int = 100,
     date: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
