@@ -450,6 +450,10 @@ def update_lotto(
     lotto.result_time = parse_time(lotto_in.result_time)
     lotto.rules = getattr(lotto_in, 'rules', {})
     
+    # ✅ [FIX] อัปเดต is_active ด้วย (ถ้า Frontend ส่งมา)
+    if hasattr(lotto_in, 'is_active'):
+        lotto.is_active = lotto_in.is_active
+    
     db.commit()
     lotto_cache.invalidate_lotto_cache()
     db.refresh(lotto)

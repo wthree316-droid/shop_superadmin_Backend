@@ -210,6 +210,7 @@ class LottoCreate(BaseModel):
     open_days: List[str] = []
     rules: Optional[Dict[str, Any]] = None
     is_template: bool = False
+    is_active: Optional[bool] = True  # ✅ [FIX] เพิ่มฟิลด์ is_active
 
 
 class LottoResponse(LottoCreate):
