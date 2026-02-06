@@ -164,10 +164,10 @@ def cleanup_shop_data(
         result = db.execute(text("DELETE FROM tickets WHERE shop_id = :sid"), params)
         print(f"   ✅ Deleted {result.rowcount} tickets")
         
-        # 3. ✅ [NEW] ลบผลรางวัลของหวยในร้านนี้
+        # 3. ✅ [FIX] ลบผลรางวัลของหวยในร้านนี้ (แก้ชื่อคอลัมน์ lotto_id → lotto_type_id)
         result = db.execute(text("""
             DELETE FROM lotto_results 
-            WHERE lotto_id IN (SELECT id FROM lotto_types WHERE shop_id = :sid)
+            WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE shop_id = :sid)
         """), params)
         print(f"   ✅ Deleted {result.rowcount} lotto_results")
         
