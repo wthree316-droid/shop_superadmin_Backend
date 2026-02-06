@@ -6,7 +6,7 @@ from app.schemas import LottoResponse # ต้อง import Schema มาเพ�
 # เก็บเป็น List of Dictionaries แทน ORM Objects
 _LOTTO_LIST_CACHE: Optional[List[Dict]] = None
 _LAST_UPDATED: float = 0
-CACHE_DURATION = 300  # 5 นาที
+CACHE_DURATION = 10  # ✅ [FIX] ลดเหลือ 10 วินาที (เดิม 300 วินาที / 5 นาที)
 
 def get_cached_lottos(db_fetch_callback) -> List[Dict]:
     """
@@ -47,6 +47,7 @@ def invalidate_lotto_cache():
     """
     เรียกใช้เมื่อ Admin กดเพิ่ม/ลบ/แก้ไขหวย
     """
-    global _LOTTO_LIST_CACHE
+    global _LOTTO_LIST_CACHE, _LAST_UPDATED
     _LOTTO_LIST_CACHE = None
-    print("🗑️ Invalidated Lotto Cache")
+    _LAST_UPDATED = 0  # ✅ [FIX] Reset timestamp เพื่อบังคับให้ refresh cache ทันที
+    print("🗑️ Invalidated Lotto Cache (forced refresh next request)")

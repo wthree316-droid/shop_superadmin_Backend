@@ -472,10 +472,21 @@ def toggle_lotto_status(
     if not lotto:
         raise HTTPException(status_code=404, detail="Lotto not found")
 
-    lotto.is_active = not lotto.is_active
+    # Toggle state
+    new_state = not lotto.is_active
+    lotto.is_active = new_state
+    
+    # ✅ [FIX] Commit และ refresh เพื่อให้แน่ใจว่า DB ได้รับการอัปเดต
     db.commit()
-    lotto_cache.invalidate_lotto_cache() # ✅ ล้าง Cache
-    return {"status": "success", "new_state": lotto.is_active}
+    db.refresh(lotto)
+    
+    # ✅ [FIX] ล้าง Cache ทันทีหลัง commit เสร็จ
+    lotto_cache.invalidate_lotto_cache()
+    
+    # ✅ [FIX] Log เพื่อ debug
+    print(f"✅ Toggled lotto {lotto_id} to is_active={new_state}")
+    
+    return {"status": "success", "new_state": lotto.is_active, "lotto_id": str(lotto_id)}
 
 @router.delete("/lottos/{lotto_id}")
 def delete_lotto(
