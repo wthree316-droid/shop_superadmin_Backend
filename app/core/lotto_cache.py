@@ -72,7 +72,7 @@ def get_cached_lottos(db_fetch_callback) -> List[Dict]:
                 _LOTTO_LIST_CACHE = valid_lottos
                 _LAST_UPDATED = current_time
                 
-                print(f"✅ Cache refreshed: {len(valid_lottos)} lottos (query: {query_time:.0f}ms, hit rate: {get_cache_hit_rate():.1f}%)")
+                print(f"✅ Cache refreshed: {len(valid_lottos)} lottos (query: {query_time:.0f}ms, hit rate: {_get_cache_hit_rate_unsafe():.1f}%)")
                 
             except Exception as e:
                 print(f"❌ Cache Refresh Error: {e}")
@@ -88,7 +88,7 @@ def get_cached_lottos(db_fetch_callback) -> List[Dict]:
             _cache_hits += 1
             cache_age = current_time - _LAST_UPDATED
             if _cache_hits % 100 == 0:  # Log ทุก 100 hits
-                print(f"📊 Cache stats: {_cache_hits} hits, {_cache_misses} misses (hit rate: {get_cache_hit_rate():.1f}%)")
+                print(f"📊 Cache stats: {_cache_hits} hits, {_cache_misses} misses (hit rate: {_get_cache_hit_rate_unsafe():.1f}%)")
         
         return _LOTTO_LIST_CACHE if _LOTTO_LIST_CACHE else []
 
@@ -107,25 +107,43 @@ def invalidate_lotto_cache():
 
 def get_cache_stats() -> Dict:
     """
-    ดึงสถิติ Cache สำหรับ Monitoring
+    ดึงสถิติ Cache สำหรับ Monitoring (Thread-Safe)
     """
-    return {
-        "cache_hits": _cache_hits,
-        "cache_misses": _cache_misses,
-        "hit_rate": get_cache_hit_rate(),
-        "cached_items": len(_LOTTO_LIST_CACHE) if _LOTTO_LIST_CACHE else 0,
-        "cache_age_seconds": time.time() - _LAST_UPDATED if _LAST_UPDATED > 0 else None,
-        "cache_duration": CACHE_DURATION
-    }
+    with _cache_lock:  # ✅ [FIX] ป้องกัน race condition
+        return {
+            "cache_hits": _cache_hits,
+            "cache_misses": _cache_misses,
+            "hit_rate": _get_cache_hit_rate_unsafe(),  # เรียก unsafe version (อยู่ใน lock แล้ว)
+            "cached_items": len(_LOTTO_LIST_CACHE) if _LOTTO_LIST_CACHE else 0,
+            "cache_age_seconds": time.time() - _LAST_UPDATED if _LAST_UPDATED > 0 else None,
+            "cache_duration": CACHE_DURATION
+        }
 
 def get_cache_hit_rate() -> float:
-    """คำนวณ Cache Hit Rate (%)"""
+    """
+    คำนวณ Cache Hit Rate (%) - Thread-Safe
+    
+    Note: ใช้สำหรับเรียกจากภายนอก (เช่น logging)
+    """
+    with _cache_lock:  # ✅ [FIX] ป้องกัน race condition
+        return _get_cache_hit_rate_unsafe()
+
+def _get_cache_hit_rate_unsafe() -> float:
+    """
+    คำนวณ Cache Hit Rate (%) - Internal Use Only (ไม่มี lock)
+    
+    Warning: ต้องเรียกภายใน context ที่มี _cache_lock แล้วเท่านั้น!
+    """
     total = _cache_hits + _cache_misses
     return (_cache_hits / total * 100) if total > 0 else 0.0
 
 def reset_cache_metrics():
-    """รีเซ็ต metrics (สำหรับ testing หรือ monitoring reset)"""
+    """
+    รีเซ็ต metrics (สำหรับ testing หรือ monitoring reset) - Thread-Safe
+    """
     global _cache_hits, _cache_misses
-    _cache_hits = 0
-    _cache_misses = 0
-    print("🔄 Cache metrics reset")
+    
+    with _cache_lock:  # ✅ [FIX] ป้องกัน race condition
+        _cache_hits = 0
+        _cache_misses = 0
+        print("🔄 Cache metrics reset")

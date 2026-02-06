@@ -171,8 +171,11 @@ def cleanup_shop_data(
         """), params)
         print(f"   ✅ Deleted {result.rowcount} lotto_results")
         
-        # 4. ✅ [NEW] ลบเลขอั้นของร้านนี้
-        result = db.execute(text("DELETE FROM number_risks WHERE shop_id = :sid"), params)
+        # 4. ✅ [FIX] ลบเลขอั้นผ่าน lotto_type_id (เพราะ shop_id nullable)
+        result = db.execute(text("""
+            DELETE FROM number_risks 
+            WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE shop_id = :sid)
+        """), params)
         print(f"   ✅ Deleted {result.rowcount} number_risks")
 
         db.commit()
