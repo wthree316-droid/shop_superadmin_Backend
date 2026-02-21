@@ -18,17 +18,15 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String, unique=True, nullable=False, index=True)
     password_hash = Column(String, nullable=False)
-    
     role = Column(SAEnum(UserRole), nullable=False, default=UserRole.member)
-    
     # เชื่อมไปที่ table shops
     shop_id = Column(UUID(as_uuid=True), ForeignKey("shops.id"), nullable=True, index=True)
-    
     full_name = Column(String, nullable=True)
     credit_balance = Column(DECIMAL(15, 2), default=0.00)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     failed_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime(timezone=True), nullable=True)
+    commission_percent = Column(DECIMAL(5, 2), default=0.00)
     # Relationship: เชื่อมกลับไปหา Shop
     shop = relationship("Shop", back_populates="users")

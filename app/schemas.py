@@ -56,6 +56,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     password: Optional[str] = None
     is_active: Optional[bool] = None
+    commission_percent: Optional[Decimal] = None
 
 class UserResponse(BaseModel):
     id: UUID
@@ -68,7 +69,7 @@ class UserResponse(BaseModel):
     credit_balance: Decimal
     shop_name: Optional[str] = None  
     shop_logo: Optional[str] = None
-
+    commission_percent: Decimal = Decimal('0.00')
     class Config:
         from_attributes = True
 
@@ -132,6 +133,7 @@ class TicketResponse(BaseModel):
     items: List[BetItemResponse] = []
     lotto_type: Optional[LottoResponseShort] = None
     lotto_type_id: UUID
+    commission_amount: Optional[Decimal] = Decimal('0.00')
     class Config:
         from_attributes = True
 
@@ -174,6 +176,7 @@ class MemberCreate(BaseModel):
     username: str
     password: str
     full_name: Optional[str] = None
+    commission_percent: Optional[Decimal] = Decimal('0.00')
 
 class CreditAdjustment(BaseModel):
     amount: Decimal

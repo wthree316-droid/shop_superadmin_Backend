@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core import security
-from app.core.config import settings
+from app.core.config import settings, get_thai_now
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas import UserCreate, UserResponse, UserRole, Token
@@ -37,9 +37,9 @@ def login_access_token(
 
     # 2. [Security] ตรวจสอบว่าบัญชีถูกล็อคอยู่ไหม?
     if user.locked_until:
-        if user.locked_until > datetime.now():
+        if user.locked_until > get_thai_now():
             # ยังไม่ถึงเวลาปลดล็อค
-            wait_time = user.locked_until - datetime.now()
+            wait_time = user.locked_until - get_thai_now()
             minutes = int(wait_time.total_seconds() / 60) + 1
             raise HTTPException(
                 status_code=400, 
@@ -60,7 +60,7 @@ def login_access_token(
         
         # ถ้าผิดครบโควตา -> ล็อคบัญชี
         if user.failed_attempts >= MAX_FAILED_ATTEMPTS:
-            user.locked_until = datetime.now() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+            user.locked_until = get_thai_now() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
             db.add(user)
             db.commit()
             

@@ -213,6 +213,9 @@ def update_member_by_admin(
         if user_in.is_active == True:
             member.failed_attempts = 0
             member.locked_until = None
+        
+    if user_in.commission_percent is not None:
+        member.commission_percent = user_in.commission_percent
 
     db.add(member)
     db.commit()
@@ -245,7 +248,8 @@ def create_member(
         role=UserRole.member, 
         shop_id=target_shop_id,
         credit_balance=0,
-        is_active=True
+        is_active=True,
+        commission_percent=member_in.commission_percent
     )
     db.add(new_user)
     db.commit()

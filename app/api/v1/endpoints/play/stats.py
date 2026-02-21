@@ -41,11 +41,13 @@ def get_stats_range(
     sales_query = db.query(
         func.sum(Ticket.total_amount).label("total_sales"),
         func.count(Ticket.id).label("total_tickets"),
+        func.sum(Ticket.commission_amount).label("total_commission")
     ).filter(*base_filters, Ticket.status != TicketStatus.CANCELLED) 
     
     sales_result = sales_query.first()
     total_sales = sales_result.total_sales or 0
     total_tickets = sales_result.total_tickets or 0
+    total_commission = sales_result.total_commission or 0
 
     payout_query = db.query(func.sum(TicketItem.winning_amount))\
         .join(Ticket)\
@@ -63,7 +65,7 @@ def get_stats_range(
         .filter(*base_filters, Ticket.status == TicketStatus.CANCELLED)\
         .scalar() or 0
     
-    profit = total_sales - total_payout - total_pending
+    profit = total_sales - total_payout - total_pending - total_commission
 
     return {
         "start_date": start_date,
@@ -73,6 +75,7 @@ def get_stats_range(
         "total_payout": total_payout,
         "total_pending": total_pending, 
         "total_cancelled": cancelled_count,
+        "total_commission": total_commission,
         "profit": profit
     }
 
@@ -123,7 +126,7 @@ def get_summary_stats(
 def get_top_numbers(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    limit: int = 10,
+    limit: int = 200,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
@@ -211,6 +214,8 @@ def get_member_stats(
                 "total_win": Decimal(0),
                 "pending_amount": Decimal(0),
                 "cancelled_amount": Decimal(0),
+                "total_commission": Decimal(0),
+                "commission_percent": float(t.user.commission_percent or 0),
                 "bill_count": 0
             }
         
@@ -221,6 +226,7 @@ def get_member_stats(
             s["cancelled_amount"] += t.total_amount
         else:
             s["total_bet"] += t.total_amount
+            s["total_commission"] += (t.commission_amount or Decimal(0))
             if t.status == TicketStatus.PENDING:
                 s["pending_amount"] += t.total_amount
             elif t.status == TicketStatus.WIN:

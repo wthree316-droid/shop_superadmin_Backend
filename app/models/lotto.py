@@ -68,7 +68,7 @@ class Ticket(Base):
     status = Column(String, default=TicketStatus.PENDING)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     round_date = Column(Date, nullable=True)
-    
+    commission_amount = Column(DECIMAL(10, 2), default=0.00)
     # Relationships
     items = relationship("TicketItem", back_populates="ticket", cascade="all, delete-orphan")
     user = relationship("User", backref="tickets") # เพื่อให้เรียก user.tickets ได้

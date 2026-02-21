@@ -201,7 +201,11 @@ def submit_ticket(
 
     try:
         user_db.credit_balance = current_credit - total_amount
-        db.add(current_user)
+
+        comm_pct = Decimal(str(user_db.commission_percent or 0))
+        comm_amount = (total_amount * comm_pct) / Decimal('100')
+
+        # db.add(current_user) #ไม่แน่ใจเก็บไว้ก่อน
 
         new_ticket = Ticket(
             shop_id=target_shop_id,
@@ -210,6 +214,7 @@ def submit_ticket(
             round_date=target_round_date,
             note=ticket_in.note,
             total_amount=total_amount,
+            commission_amount=comm_amount,
             status=TicketStatus.PENDING
         )
         db.add(new_ticket)
