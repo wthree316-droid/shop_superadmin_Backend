@@ -369,7 +369,9 @@ def get_lotto_detail(
         "open_days": lotto.open_days,
         "rates": rates,
         "is_active": lotto.is_active,
-        "theme_color": final_theme
+        "theme_color": final_theme,
+        "rules": lotto.rules,
+        "open_time": lotto.open_time
     }
 
 @router.post("/lottos", response_model=LottoResponse)
@@ -502,32 +504,32 @@ def delete_lotto(
         raise HTTPException(status_code=404, detail="Lotto not found")
     
     try:
-        # ✅ 1. ลบตัวเลขในโพย (ticket_items) ที่ผูกกับโพยของหวยนี้
-        db.execute(
-            text("DELETE FROM ticket_items WHERE ticket_id IN (SELECT id FROM tickets WHERE lotto_type_id = :lid)"),
-            {"lid": lotto.id}
-        )
-        
-        # ✅ 2. ลบโพยหลัก (tickets) ของหวยนี้
-        db.execute(
-            text("DELETE FROM tickets WHERE lotto_type_id = :lid"),
-            {"lid": lotto.id}
-        )
+        # 🌟 กรณีที่ 1: ถ้าเป็น "แม่แบบ" (is_template = True) และคนลบคือ Superadmin
+        # ระบบจะล้างบางหวยที่มี code เดียวกันใน "ทุกร้านค้า"
+        if lotto.is_template and current_user.role == UserRole.superadmin:
+            target_code = lotto.code
+            
+            # 1. ลบตัวเลขในโพยทุกร้าน
+            db.execute(text("DELETE FROM ticket_items WHERE ticket_id IN (SELECT id FROM tickets WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE code = :code))"), {"code": target_code})
+            # 2. ลบโพยหลักทุกร้าน
+            db.execute(text("DELETE FROM tickets WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE code = :code)"), {"code": target_code})
+            # 3. ลบเลขอั้นทุกร้าน
+            db.execute(text("DELETE FROM number_risks WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE code = :code)"), {"code": target_code})
+            # 4. ลบผลรางวัลทุกร้าน
+            db.execute(text("DELETE FROM lotto_results WHERE lotto_type_id IN (SELECT id FROM lotto_types WHERE code = :code)"), {"code": target_code})
+            # 5. ลบตัวหวย (รวมถึงแม่แบบและลูกๆ ทั้งหมด)
+            db.execute(text("DELETE FROM lotto_types WHERE code = :code"), {"code": target_code})
 
-        # ✅ 3. ลบเลขอั้น/เลขเต็ม (number_risks) ของหวยนี้
-        db.execute(
-            text("DELETE FROM number_risks WHERE lotto_type_id = :lid"),
-            {"lid": lotto.id}
-        )
 
-        # ✅ 4. ลบผลรางวัล (lotto_results) ของหวยนี้ที่เคยออกไปแล้ว
-        db.execute(
-            text("DELETE FROM lotto_results WHERE lotto_type_id = :lid"),
-            {"lid": lotto.id}
-        )
+        # 🌟 กรณีที่ 2: ถ้าไม่ใช่แม่แบบ (เช่น แอดมินร้านกดลบหวยของร้านตัวเอง)
+        # ระบบจะลบเฉพาะของร้านนั้นๆ ตาม lotto.id ปกติ
+        else:
+            db.execute(text("DELETE FROM ticket_items WHERE ticket_id IN (SELECT id FROM tickets WHERE lotto_type_id = :lid)"), {"lid": lotto.id})
+            db.execute(text("DELETE FROM tickets WHERE lotto_type_id = :lid"), {"lid": lotto.id})
+            db.execute(text("DELETE FROM number_risks WHERE lotto_type_id = :lid"), {"lid": lotto.id})
+            db.execute(text("DELETE FROM lotto_results WHERE lotto_type_id = :lid"), {"lid": lotto.id})
+            db.delete(lotto)
 
-        # ✅ 5. ลบตัวหวยเป็นอันดับสุดท้าย
-        db.delete(lotto)
         db.commit()
         lotto_cache.invalidate_lotto_cache()
         
@@ -537,17 +539,30 @@ def delete_lotto(
     
     return {"status": "success", "message": "Lotto and all related data completely deleted"}
 
+from pydantic import BaseModel
+class ImportTemplateRequest(BaseModel):
+    template_ids: List[str]
+
 @router.post("/lottos/import_defaults")
 def import_default_lottos(
+    request: ImportTemplateRequest, # ✅ รับค่า ID ที่เลือกมาจากหน้าเว็บ
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
     if current_user.role != UserRole.admin or not current_user.shop_id:
         raise HTTPException(status_code=403, detail="Only Shop Admin can import")
 
-    templates = db.query(LottoType).filter(LottoType.is_template == True).all()
+    if not request.template_ids:
+        raise HTTPException(status_code=400, detail="กรุณาเลือกหวยแม่แบบอย่างน้อย 1 รายการ")
+
+    # ✅ ดึงข้อมูลแม่แบบเฉพาะ "ตัวที่ติ๊กเลือกส่งมา"
+    templates = db.query(LottoType).filter(
+        LottoType.is_template == True,
+        func.cast(LottoType.id, String).in_(request.template_ids)
+    ).all()
+    
     if not templates:
-        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลแม่แบบ")
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลแม่แบบที่เลือก")
 
     default_rate = db.query(RateProfile).filter(
         RateProfile.shop_id == current_user.shop_id
@@ -558,6 +573,7 @@ def import_default_lottos(
     
     imported_count = 0
     for tmpl in templates:
+        # เช็คว่ามีอยู่แล้วหรือยัง
         exists = db.query(LottoType).filter(
             LottoType.shop_id == current_user.shop_id,
             LottoType.code == tmpl.code
