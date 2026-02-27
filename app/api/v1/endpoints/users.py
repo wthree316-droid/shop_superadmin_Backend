@@ -1,6 +1,7 @@
 from typing import List 
 from uuid import UUID   
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import text
 from sqlalchemy.orm import Session 
 from app.models.user import UserRole, User
 from app.schemas import UserCreate, MemberCreate, CreditAdjustment, UserResponse, UserUpdate
@@ -145,15 +146,11 @@ def delete_user(
     # 2. ตรวจสอบสิทธิ์
     if current_user.role == UserRole.superadmin:
         pass 
-        
     elif current_user.role == UserRole.admin:
-        # Admin: ลบได้เฉพาะ Member และต้องเป็นคนในร้านตัวเอง
         if user_to_delete.role != UserRole.member:
              raise HTTPException(status_code=403, detail="Admins can only delete members")
-             
         if user_to_delete.shop_id != current_user.shop_id:
              raise HTTPException(status_code=403, detail="Cannot delete member from another shop")
-             
     else:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -161,15 +158,33 @@ def delete_user(
     if user_to_delete.id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
 
-    # 4. ทำการลบ
+    # 4. ✅ ทำการลบข้อมูลแบบ Cascade (ลบประวัติทั้งหมดก่อนลบ User)
     try:
+        # ลบข้อมูล "ตัวเลขในโพย" (tickets_items) ที่เชื่อมกับโพยของ User คนนี้
+        db.execute(
+            text("DELETE FROM ticket_items WHERE ticket_id IN (SELECT id FROM tickets WHERE user_id = :uid)"), 
+            {"uid": user_to_delete.id}
+        )
+        
+        # ลบข้อมูล "โพยหลัก" (tickets)
+        db.execute(
+            text("DELETE FROM tickets WHERE user_id = :uid"), 
+            {"uid": user_to_delete.id}
+        )
+
+        # 💡 (เผื่อไว้) ถ้าคุณมีตารางประวัติการเงิน เช่น transactions หรือ credit_logs ให้เอาคอมเมนต์ออกแล้วลบด้วย
+        # db.execute(text("DELETE FROM transactions WHERE user_id = :uid"), {"uid": user_to_delete.id})
+
+        # ลบตัว User เป็นอันดับสุดท้าย
         db.delete(user_to_delete)
         db.commit()
+        
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Cannot delete user with active history. Try banning instead.")
+        # คืนค่า Error ออกมาให้ดูเผื่อติดตารางอื่นที่ลืมลบ
+        raise HTTPException(status_code=400, detail=f"ไม่สามารถลบได้ ติดเงื่อนไขฐานข้อมูล: {str(e)}")
 
-    return {"status": "success", "message": "User deleted"}
+    return {"status": "success", "message": "User and all related data completely deleted"}
 
 # Admin แก้ไขข้อมูล Member
 @router.put("/members/{user_id}", response_model=UserResponse)

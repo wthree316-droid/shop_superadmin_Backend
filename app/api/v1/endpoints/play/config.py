@@ -3,7 +3,7 @@ from uuid import UUID
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, String
+from sqlalchemy import func, String, text
 
 from app.api import deps
 from app.schemas import (
@@ -502,14 +502,40 @@ def delete_lotto(
         raise HTTPException(status_code=404, detail="Lotto not found")
     
     try:
+        # ✅ 1. ลบตัวเลขในโพย (ticket_items) ที่ผูกกับโพยของหวยนี้
+        db.execute(
+            text("DELETE FROM ticket_items WHERE ticket_id IN (SELECT id FROM tickets WHERE lotto_type_id = :lid)"),
+            {"lid": lotto.id}
+        )
+        
+        # ✅ 2. ลบโพยหลัก (tickets) ของหวยนี้
+        db.execute(
+            text("DELETE FROM tickets WHERE lotto_type_id = :lid"),
+            {"lid": lotto.id}
+        )
+
+        # ✅ 3. ลบเลขอั้น/เลขเต็ม (number_risks) ของหวยนี้
+        db.execute(
+            text("DELETE FROM number_risks WHERE lotto_type_id = :lid"),
+            {"lid": lotto.id}
+        )
+
+        # ✅ 4. ลบผลรางวัล (lotto_results) ของหวยนี้ที่เคยออกไปแล้ว
+        db.execute(
+            text("DELETE FROM lotto_results WHERE lotto_type_id = :lid"),
+            {"lid": lotto.id}
+        )
+
+        # ✅ 5. ลบตัวหวยเป็นอันดับสุดท้าย
         db.delete(lotto)
         db.commit()
         lotto_cache.invalidate_lotto_cache()
-    except Exception:
+        
+    except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="ไม่สามารถลบหวยนี้ได้")
+        raise HTTPException(status_code=400, detail=f"ไม่สามารถลบได้ ติดเงื่อนไขฐานข้อมูล: {str(e)}")
     
-    return {"status": "success", "message": "Lotto deleted successfully"}
+    return {"status": "success", "message": "Lotto and all related data completely deleted"}
 
 @router.post("/lottos/import_defaults")
 def import_default_lottos(
