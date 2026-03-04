@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import datetime, time, date, timedelta
 from sqlalchemy.orm import Session, joinedload
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, desc, extract
+from sqlalchemy import func, desc, extract, case
 
 from app.api import deps
 from app.db.session import get_db
@@ -188,51 +188,62 @@ def get_member_stats(
     start_utc = datetime.combine(s_date, time.min) - timedelta(hours=7)
     end_utc = datetime.combine(e_date, time.max) - timedelta(hours=7)
 
-    query = db.query(Ticket).options(
-        joinedload(Ticket.user), 
-        joinedload(Ticket.items)
-    ).filter(
+    # 1. กำหนด Filter พื้นฐาน
+    base_filters = [
         Ticket.created_at >= start_utc,
         Ticket.created_at <= end_utc
-    )
-
+    ]
     if current_user.role == UserRole.admin:
-        query = query.filter(Ticket.shop_id == current_user.shop_id)
+        base_filters.append(Ticket.shop_id == current_user.shop_id)
 
-    tickets = query.all()
-    stats = {}
-    for t in tickets:
-        if not t.user: continue
-        uid = str(t.user.id)
-        if uid not in stats:
-            stats[uid] = {
-                "user_id": uid,
-                "username": t.user.username,
-                "full_name": t.user.full_name or "-",
-                "role": t.user.role.value,
-                "total_bet": Decimal(0),
-                "total_win": Decimal(0),
-                "pending_amount": Decimal(0),
-                "cancelled_amount": Decimal(0),
-                "total_commission": Decimal(0),
-                "commission_percent": float(t.user.commission_percent or 0),
-                "bill_count": 0
-            }
-        
-        s = stats[uid]
-        s["bill_count"] += 1
-        
-        if t.status == TicketStatus.CANCELLED:
-            s["cancelled_amount"] += t.total_amount
-        else:
-            s["total_bet"] += t.total_amount
-            s["total_commission"] += (t.commission_amount or Decimal(0))
-            if t.status == TicketStatus.PENDING:
-                s["pending_amount"] += t.total_amount
-            elif t.status == TicketStatus.WIN:
-                win_amt = sum(item.winning_amount for item in t.items if item.status == 'WIN')
-                s["total_win"] += win_amt
+    # 🚀 2. ให้ Database ทำการบวกเลขและจัดกลุ่มให้เลย (ไวกว่า Python 1,000 เท่า!)
+    ticket_stats = db.query(
+        User.id.label("user_id"),
+        User.username,
+        User.full_name,
+        User.role,
+        User.commission_percent,
+        func.count(Ticket.id).label("bill_count"),
+        func.sum(case([(Ticket.status != TicketStatus.CANCELLED, Ticket.total_amount)], else_=0)).label("total_bet"),
+        func.sum(case([(Ticket.status == TicketStatus.CANCELLED, Ticket.total_amount)], else_=0)).label("cancelled_amount"),
+        func.sum(case([(Ticket.status == TicketStatus.PENDING, Ticket.total_amount)], else_=0)).label("pending_amount"),
+        func.sum(case([(Ticket.status != TicketStatus.CANCELLED, Ticket.commission_amount)], else_=0)).label("total_commission")
+    ).join(Ticket, User.id == Ticket.user_id).filter(*base_filters).group_by(
+        User.id, User.username, User.full_name, User.role, User.commission_percent
+    ).all()
 
-    results = list(stats.values())
+    # 🚀 3. Query แยกสำหรับหายอดถูกรางวัล (Winning Amount)
+    win_stats = db.query(
+        Ticket.user_id,
+        func.sum(TicketItem.winning_amount).label("total_win")
+    ).join(Ticket, Ticket.id == TicketItem.ticket_id).filter(
+        *base_filters,
+        Ticket.status == TicketStatus.WIN,
+        TicketItem.status == 'WIN'
+    ).group_by(Ticket.user_id).all()
+
+    # แปลงข้อมูลถูกรางวัลเป็น Dictionary เพื่อให้ค้นหาได้ไวที่สุด O(1)
+    win_map = {str(w.user_id): w.total_win or Decimal(0) for w in win_stats}
+
+    # 4. จัดรูปฟอร์แมตเพื่อส่งกลับไปให้หน้าเว็บ
+    results = []
+    for t in ticket_stats:
+        uid_str = str(t.user_id)
+        results.append({
+            "user_id": uid_str,
+            "username": t.username,
+            "full_name": t.full_name or "-",
+            "role": t.role.value,
+            "total_bet": t.total_bet or Decimal(0),
+            "total_win": win_map.get(uid_str, Decimal(0)),
+            "pending_amount": t.pending_amount or Decimal(0),
+            "cancelled_amount": t.cancelled_amount or Decimal(0),
+            "total_commission": t.total_commission or Decimal(0),
+            "commission_percent": float(t.commission_percent or 0),
+            "bill_count": t.bill_count or 0
+        })
+
+    # เรียงลำดับคนแทงเยอะสุดขึ้นก่อน
     results.sort(key=lambda x: x["total_bet"], reverse=True)
+    
     return results

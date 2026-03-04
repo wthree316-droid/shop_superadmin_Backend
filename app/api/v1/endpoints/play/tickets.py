@@ -192,21 +192,18 @@ def submit_ticket(
         })
         total_amount += final_amount
 
-    # 6. ตัดเงินและบันทึกบิล
-    user_db = db.query(User).filter(User.id == current_user.id).with_for_update().first()
-    current_credit = Decimal(str(user_db.credit_balance))
-
-    if current_credit < total_amount:
-        raise HTTPException(status_code=400, detail=f"ยอดเงินไม่พอ (ขาด {total_amount - current_credit:,.2f} บาท)")
+    # 6. ตรวจสอบยอดเงินเบื้องต้น (แบบไม่ Lock เพื่อให้คืนค่า Error ไวที่สุดถ้าเงินไม่พอ)
+    if Decimal(str(current_user.credit_balance)) < total_amount:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"ยอดเงินไม่พอ (ขาด {total_amount - Decimal(str(current_user.credit_balance)):,.2f} บาท)"
+        )
 
     try:
-        user_db.credit_balance = current_credit - total_amount
-
-        comm_pct = Decimal(str(user_db.commission_percent or 0))
+        comm_pct = Decimal(str(current_user.commission_percent or 0))
         comm_amount = (total_amount * comm_pct) / Decimal('100')
 
-        # db.add(current_user) #ไม่แน่ใจเก็บไว้ก่อน
-
+        # 7. สร้างบิลหลัก
         new_ticket = Ticket(
             shop_id=target_shop_id,
             user_id=current_user.id,
@@ -218,24 +215,40 @@ def submit_ticket(
             status=TicketStatus.PENDING
         )
         db.add(new_ticket)
-        db.flush() 
+        db.flush() # ดันข้อมูลเข้า DB เพื่อให้ได้ new_ticket.id มาใช้งานก่อน
 
-        for p_item in processed_items:
-            t_item = TicketItem(
+        # 8. 🚀 ใช้ Bulk Insert สำหรับรายการเลขแทง (แก้ปัญหา N+1 ยิง SQL รวดเดียว!)
+        items_to_insert = [
+            TicketItem(
                 ticket_id=new_ticket.id,
-                number=p_item["number"],
-                bet_type=p_item["bet_type"],
-                amount=p_item["amount"],
-                reward_rate=p_item["reward_rate"],
+                number=p["number"],
+                bet_type=p["bet_type"],
+                amount=p["amount"],
+                reward_rate=p["reward_rate"],
                 winning_amount=0,
                 status=TicketStatus.PENDING
-            )
-            db.add(t_item)
+            ) for p in processed_items
+        ]
+        db.bulk_save_objects(items_to_insert)
+
+        # 9. ⚡ ล็อกข้อมูล User (with_for_update) ตอนท้ายสุด เพื่อลดระยะเวลาการล็อกให้น้อยที่สุด
+        user_db = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+        current_credit = Decimal(str(user_db.credit_balance))
+        
+        # เช็คยอดเงินอีกครั้งเพื่อความชัวร์ (ป้องกันกรณีลูกค้ากดยิงบิลพร้อมกัน 2 หน้าต่างในเสี้ยววินาที)
+        if current_credit < total_amount:
+            raise HTTPException(status_code=400, detail="ยอดเงินไม่พอ กรุณาเติมเครดิต")
+            
+        # หักเงิน
+        user_db.credit_balance = current_credit - total_amount
 
         db.commit()
         db.refresh(new_ticket)
         return new_ticket
 
+    except HTTPException as he:
+        db.rollback()
+        raise he
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"ระบบขัดข้อง: {str(e)}")

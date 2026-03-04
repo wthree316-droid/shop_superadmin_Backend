@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, DateTime, Time, JSON, Text, Date, UniqueConstraint, Integer
+from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, DateTime, Time, JSON, Text, Date, UniqueConstraint, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -74,6 +74,9 @@ class Ticket(Base):
     user = relationship("User", backref="tickets") # เพื่อให้เรียก user.tickets ได้
     lotto_type = relationship("LottoType")
     shop = relationship("Shop")
+    __table_args__ = (
+        Index('ix_ticket_created_shop_status', 'created_at', 'shop_id', 'status'),
+    )
 
 class TicketItem(Base):
     __tablename__ = "ticket_items"
@@ -88,6 +91,11 @@ class TicketItem(Base):
     status = Column(String, default=TicketStatus.PENDING)
     
     ticket = relationship("Ticket", back_populates="items")
+    
+    __table_args__ = (
+        Index('ix_ticket_item_number_status', 'number', 'status'),
+        Index('ix_ticket_item_ticket_id', 'ticket_id'),
+    )
 
 
 class LottoResult(Base):
