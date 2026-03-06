@@ -14,7 +14,7 @@ _LAST_UPDATED: float = 0
 _cache_lock = threading.Lock()  # ✅ Thread-safe protection
 
 # ==================== Configuration ====================
-CACHE_DURATION = 1  # ✅ [OPTIMIZED] 1 วินาที (Balance ระหว่าง Performance และ Freshness)
+CACHE_DURATION = 60  
 
 # ==================== Metrics (สำหรับ Debug) ====================
 _cache_hits = 0
