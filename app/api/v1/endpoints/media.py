@@ -1,3 +1,4 @@
+import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from app.api import deps
@@ -52,9 +53,10 @@ async def upload_flag(
         if not filename.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
              raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์รูปภาพ (png, jpg, webp, gif)")
         
-        # ตั้งชื่อไฟล์ใหม่กันซ้ำ (เช่น th_uuid.png) หรือใช้ชื่อเดิมก็ได้
-        # ในที่นี้ใช้ชื่อเดิมนำหน้า ตามด้วย UUID สั้นๆ เพื่อให้จำง่ายแต่ไม่ซ้ำ
-        safe_name = f"{uuid.uuid4().hex[:6]}_{filename.replace(' ', '_')}"
+        # 🌟 แก้ไข: ดึงเฉพาะนามสกุลไฟล์มา (.png, .jpg) และใช้ UUID สุ่มชื่อไฟล์ใหม่เป็นภาษาอังกฤษ 100%
+        file_extension = os.path.splitext(filename)[1]
+        safe_name = f"{uuid.uuid4().hex}{file_extension}"
+        
         path = f"flags/{safe_name}"
         
         file_content = await file.read()

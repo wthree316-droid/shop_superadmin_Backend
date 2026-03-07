@@ -2,7 +2,7 @@ from decimal import Decimal
 from typing import List, Optional
 from datetime import datetime, time, date, timedelta
 from uuid import UUID
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy import desc
 
@@ -346,7 +346,7 @@ def read_history(
         raise HTTPException(status_code=400, detail="Invalid date format")
 
     query = db.query(Ticket).options(
-        joinedload(Ticket.items),
+        selectinload(Ticket.items), # ⬅️ สั่งให้ข้ามการดึงรายการเลขไปก่อน 
         joinedload(Ticket.lotto_type)
     ).filter(
         Ticket.user_id == current_user.id,
@@ -397,16 +397,37 @@ def get_shop_tickets(
         raise HTTPException(status_code=400, detail="Invalid date format")
 
     query = db.query(Ticket).options(
-            joinedload(Ticket.user),
-            joinedload(Ticket.lotto_type),
-            joinedload(Ticket.items)
-        ).filter(
-            Ticket.shop_id == current_user.shop_id,
-            Ticket.created_at >= target_start,
-            Ticket.created_at <= target_end
-        )
-
+        selectinload(Ticket.items),
+        joinedload(Ticket.user),
+        joinedload(Ticket.lotto_type)
+    ).filter(
+        Ticket.shop_id == current_user.shop_id,
+        Ticket.created_at >= target_start,
+        Ticket.created_at <= target_end
+    )
     if user_id:
         query = query.filter(Ticket.user_id == user_id)
 
     return query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
+
+# 🚀 API ใหม่: สำหรับดึงรายการเลขแทงเฉพาะบิลที่ลูกค้าต้องการดูรายละเอียด
+@router.get("/tickets/{ticket_id}/items")
+def get_ticket_items(
+    ticket_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user)
+):
+    # 1. เช็คว่าบิลมีจริงไหม
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="ไม่พบโพย")
+        
+    # 2. ป้องกันคนแอบดูบิลคนอื่น (ต้องเป็นแอดมิน หรือเจ้าของบิลเท่านั้น)
+    if current_user.role not in [UserRole.admin, UserRole.superadmin]:
+        if ticket.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ดูโพยนี้")
+            
+    # 3. ดึงรายการเลขของบิลนี้ส่งกลับไป
+    items = db.query(TicketItem).filter(TicketItem.ticket_id == ticket_id).all()
+    
+    return items

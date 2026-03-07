@@ -46,16 +46,14 @@ def get_stats_range(
         if current_user.role == UserRole.admin:
             base_filters.append(Ticket.shop_id == current_user.shop_id)
 
-        sales_query = db.query(
-            func.sum(Ticket.total_amount).label("total_sales"),
+        # 🚀 ลบ else_=0 ออกทั้งหมด เพื่อแก้บั๊ก Type Mismatch ของ PostgreSQL
+        summary = db.query(
             func.count(Ticket.id).label("total_tickets"),
-            func.sum(Ticket.commission_amount).label("total_commission")
-        ).filter(*base_filters, Ticket.status != TicketStatus.CANCELLED) 
-        
-        sales_result = sales_query.first()
-        total_sales = sales_result.total_sales or 0
-        total_tickets = sales_result.total_tickets or 0
-        total_commission = sales_result.total_commission or 0
+            func.sum(case((Ticket.status != TicketStatus.CANCELLED, Ticket.total_amount))).label("total_sales"),
+            func.sum(case((Ticket.status != TicketStatus.CANCELLED, Ticket.commission_amount))).label("total_commission"),
+            func.sum(case((Ticket.status == TicketStatus.PENDING, Ticket.total_amount))).label("total_pending"),
+            func.sum(case((Ticket.status == TicketStatus.CANCELLED, 1))).label("total_cancelled")
+        ).filter(*base_filters).first()
 
         payout_query = db.query(func.sum(TicketItem.winning_amount))\
             .join(Ticket)\
@@ -64,15 +62,16 @@ def get_stats_range(
             .filter(TicketItem.status == 'WIN')
         total_payout = payout_query.scalar() or 0
 
-        pending_query = db.query(func.sum(Ticket.total_amount))\
-            .filter(*base_filters)\
-            .filter(Ticket.status == TicketStatus.PENDING)
-        total_pending = pending_query.scalar() or 0
-
-        cancelled_count = db.query(func.count(Ticket.id))\
-            .filter(*base_filters, Ticket.status == TicketStatus.CANCELLED)\
-            .scalar() or 0
-        
+        # ✅ ดักจับกันเหนียว กรณีไม่พบบิลเลย (ป้องกัน NoneType Error)
+        if summary:
+            total_sales = summary.total_sales or 0
+            total_pending = summary.total_pending or 0
+            total_commission = summary.total_commission or 0
+            total_tickets = summary.total_tickets or 0
+            total_cancelled = summary.total_cancelled or 0
+        else:
+            total_sales = total_pending = total_commission = total_tickets = total_cancelled = 0
+            
         profit = total_sales - total_payout - total_pending - total_commission
 
         return {
@@ -82,7 +81,7 @@ def get_stats_range(
             "total_tickets": total_tickets,
             "total_payout": total_payout,
             "total_pending": total_pending, 
-            "total_cancelled": cancelled_count,
+            "total_cancelled": total_cancelled,
             "total_commission": total_commission,
             "profit": profit
         }
@@ -235,10 +234,10 @@ def get_member_stats(
             User.role,
             User.commission_percent,
             func.count(Ticket.id).label("bill_count"),
-            func.sum(case([(Ticket.status != TicketStatus.CANCELLED, Ticket.total_amount)], else_=0)).label("total_bet"),
-            func.sum(case([(Ticket.status == TicketStatus.CANCELLED, Ticket.total_amount)], else_=0)).label("cancelled_amount"),
-            func.sum(case([(Ticket.status == TicketStatus.PENDING, Ticket.total_amount)], else_=0)).label("pending_amount"),
-            func.sum(case([(Ticket.status != TicketStatus.CANCELLED, Ticket.commission_amount)], else_=0)).label("total_commission")
+            func.sum(case((Ticket.status != TicketStatus.CANCELLED, Ticket.total_amount))).label("total_bet"),
+            func.sum(case((Ticket.status == TicketStatus.CANCELLED, Ticket.total_amount))).label("cancelled_amount"),
+            func.sum(case((Ticket.status == TicketStatus.PENDING, Ticket.total_amount))).label("pending_amount"),
+            func.sum(case((Ticket.status != TicketStatus.CANCELLED, Ticket.commission_amount))).label("total_commission")
         ).join(Ticket, User.id == Ticket.user_id).filter(*base_filters).group_by(
             User.id, User.username, User.full_name, User.role, User.commission_percent
         ).all()
