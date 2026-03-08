@@ -170,18 +170,32 @@ def get_daily_rewards(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    results = db.query(LottoResult).filter(
+    # 1. ดึงผลรางวัลทั้งหมดของวันนี้ พร้อมข้อมูลหวยมาด้วย
+    results = db.query(LottoResult, LottoType).join(
+        LottoType, LottoResult.lotto_type_id == LottoType.id
+    ).filter(
         LottoResult.round_date == date
     ).all()
     
-    return {
-        str(r.lotto_type_id): {
-            "top_3": r.top_3 or (r.reward_data.get("top") if r.reward_data else ""), 
-            "bottom_2": r.bottom_2 or (r.reward_data.get("bottom") if r.reward_data else ""),
-            "created_at": r.created_at
-        } 
-        for r in results
-    }
+    # 2. จำผลรางวัลไว้ในหน่วยความจำโดยอ้างอิงจาก "รหัสหวย (Code)" เช่น THAI, LAOS
+    code_results = {}
+    for r, lotto in results:
+        if lotto.code:
+            code_results[lotto.code] = {
+                "top_3": r.top_3 or (r.reward_data.get("top") if r.reward_data else ""), 
+                "bottom_2": r.bottom_2 or (r.reward_data.get("bottom") if r.reward_data else ""),
+                "created_at": r.created_at
+            }
+            
+    # 3. จ่ายผลรางวัลกลับไปให้ "ทุกร้าน" ที่มีรหัสหวยตรงกัน (ใส่ร้านเดียว เห็นทุกร้าน!)
+    all_lottos = db.query(LottoType).all()
+    final_map = {}
+    for lotto in all_lottos:
+        if lotto.code in code_results:
+            final_map[str(lotto.id)] = code_results[lotto.code]
+            
+    return final_map
+
 
 @router.get("/history")
 def get_reward_history(
@@ -190,15 +204,27 @@ def get_reward_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    results = db.query(LottoResult).filter(
-        LottoResult.lotto_type_id == lotto_type_id
-    ).order_by(LottoResult.round_date.desc()).limit(limit).all()
+    # 1. หา Code ของหวยตัวนี้
+    target_lotto = db.query(LottoType).get(lotto_type_id)
+    if not target_lotto or not target_lotto.code:
+        return []
+        
+    # 2. หา ID ของหวยชนิดนี้จาก "ทุกร้าน"
+    related_lottos = db.query(LottoType).filter(LottoType.code == target_lotto.code).all()
+    related_ids = [l.id for l in related_lottos]
     
-    return [
-        {
-            "round_date": r.round_date,
-            "top_3": r.top_3 or (r.reward_data.get("top") if r.reward_data else ""),
-            "bottom_2": r.bottom_2 or (r.reward_data.get("bottom") if r.reward_data else "")
-        }
-        for r in results
-    ]
+    # 3. ดึงประวัติย้อนหลังและกรองไม่ให้วันที่ซ้ำกัน
+    results = db.query(LottoResult).filter(
+        LottoResult.lotto_type_id.in_(related_ids)
+    ).order_by(LottoResult.round_date.desc()).all()
+    
+    unique_results = {}
+    for r in results:
+        if r.round_date not in unique_results:
+            unique_results[r.round_date] = {
+                "round_date": r.round_date,
+                "top_3": r.top_3 or (r.reward_data.get("top") if r.reward_data else ""),
+                "bottom_2": r.bottom_2 or (r.reward_data.get("bottom") if r.reward_data else "")
+            }
+    
+    return list(unique_results.values())[:limit]
