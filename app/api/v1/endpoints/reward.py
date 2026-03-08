@@ -71,6 +71,7 @@ def process_reward_background(target_code: str, target_date: date, top_3: str, b
                 user_balance_adjustments[ticket.user_id] = current_adj - prev_win_amount
             
             ticket.status = TicketStatus.PENDING
+            ticket.winning_amount = 0 # 🌟 1. รีเซ็ตยอดเก่าเป็น 0 (กรณีคำนวณใหม่)
 
             # --- B. Calculation Phase (ตรวจรางวัลใหม่) ---
             is_ticket_win = False
@@ -99,6 +100,7 @@ def process_reward_background(target_code: str, target_date: date, top_3: str, b
             # อัปเดตสถานะบิล
             if is_ticket_win:
                 ticket.status = TicketStatus.WIN
+                ticket.winning_amount = ticket_payout # 🌟 2. เซฟยอดที่ถูกรางวัลเข้าบิล
                 win_count += 1
                 total_payout += ticket_payout
                 
@@ -106,6 +108,7 @@ def process_reward_background(target_code: str, target_date: date, top_3: str, b
                 user_balance_adjustments[ticket.user_id] = current_adj + ticket_payout
             else:
                 ticket.status = TicketStatus.LOSE
+                ticket.winning_amount = 0
 
         # 4. บันทึกการเปลี่ยนแปลงเงิน User
         for uid, amount in user_balance_adjustments.items():

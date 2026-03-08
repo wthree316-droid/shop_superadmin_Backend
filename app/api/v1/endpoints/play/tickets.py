@@ -2,7 +2,7 @@ from decimal import Decimal
 from typing import List, Optional
 from datetime import datetime, time, date, timedelta
 from uuid import UUID
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload, noload
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy import desc
 
@@ -12,6 +12,9 @@ from app.db.session import get_db
 from app.models.lotto import Ticket, TicketItem, LottoType, TicketStatus, NumberRisk
 from app.models.user import User, UserRole
 from app.core.config import get_thai_now, get_round_date, settings
+import hashlib
+import json
+from app.core.history_cache import get_or_set_history
 
 router = APIRouter()
 
@@ -314,7 +317,7 @@ def cancel_ticket(
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to cancel ticket")
 
-@router.get("/history", response_model=List[TicketResponse])
+@router.get("/history")
 def read_history(
     skip: int = 0,
     limit: int = 200,
@@ -326,44 +329,56 @@ def read_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)
 ):
-    target_start = None
-    target_end = None
-    try:
-        if start_date and end_date:
-            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-            target_start = datetime.combine(s_date, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(e_date, time.max) - timedelta(hours=7)
-        elif date:
-            t_date = datetime.strptime(date, "%Y-%m-%d").date()
-            target_start = datetime.combine(t_date, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(t_date, time.max) - timedelta(hours=7)
-        else:
-            today = (datetime.utcnow() + timedelta(hours=7)).date()
-            target_start = datetime.combine(today, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(today, time.max) - timedelta(hours=7)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format")
+    # 1. จัดการวันที่ (ใช้วันนี้เป็น Default)
+    thai_today = get_thai_now().date()
+    s_date_str = start_date or date or thai_today.strftime("%Y-%m-%d")
+    e_date_str = end_date or date or thai_today.strftime("%Y-%m-%d")
 
-    query = db.query(Ticket).options(
-        selectinload(Ticket.items), # ⬅️ สั่งให้ข้ามการดึงรายการเลขไปก่อน 
-        joinedload(Ticket.lotto_type)
-    ).filter(
-        Ticket.user_id == current_user.id,
-        Ticket.created_at >= target_start,
-        Ticket.created_at <= target_end
-    )
+    # 🌟 2. เช็คว่าเป็น "อดีต" ล้วนๆ หรือไม่?
+    # ถ้า end_date น้อยกว่า วันนี้ แปลว่าข้อมูลไม่มีทางอัปเดตแล้ว (หวยออกไปแล้ว)
+    e_date_obj = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+    is_past = e_date_obj < thai_today
 
-    if lotto_type_id:
-        query = query.filter(Ticket.lotto_type_id == lotto_type_id)
+    # 3. สร้าง Cache Key (เหมือนรหัสบัตรประชาชนของ Request นี้)
+    key_dict = {
+        "user_id": str(current_user.id), "skip": skip, "limit": limit,
+        "start": s_date_str, "end": e_date_str, 
+        "lotto": str(lotto_type_id) if lotto_type_id else "ALL",
+        "status": status or "ALL"
+    }
+    # เข้ารหัสให้สั้นลง
+    cache_key = f"history_client_{hashlib.md5(json.dumps(key_dict, sort_keys=True).encode()).hexdigest()}"
+
+    # 4. ฟังก์ชันดึง Database (จะถูกเรียกก็ต่อเมื่อไม่มี Cache)
+    def fetch_from_db():
+        try:
+            s_d = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+            e_d = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+            target_start = datetime.combine(s_d, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(e_d, time.max) - timedelta(hours=7)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+
+        query = db.query(Ticket).options(
+            noload(Ticket.items),
+            joinedload(Ticket.lotto_type)
+        ).filter(
+            Ticket.user_id == current_user.id,
+            Ticket.created_at >= target_start,
+            Ticket.created_at <= target_end
+        )
+
+        if lotto_type_id: query = query.filter(Ticket.lotto_type_id == lotto_type_id)
+        if status and status != 'ALL': query = query.filter(Ticket.status == status)
+
+        orm_results = query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
+        # 🚀 เพิ่ม from_attributes=True เข้าไปในวงเล็บ
+        return [TicketResponse.model_validate(t, from_attributes=True).model_dump() for t in orm_results]
     
-    # กรองตามสถานะ (ถ้ามีการระบุ)
-    if status and status != 'ALL':
-        query = query.filter(Ticket.status == status)
+    # 5. เรียกใช้สมองกล
+    return get_or_set_history(cache_key, is_past, fetch_from_db)
 
-    return query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
-
-@router.get("/shop_history", response_model=List[TicketResponse])
+@router.get("/shop_history")
 def get_shop_tickets(
     skip: int = 0,
     limit: int = 200,
@@ -377,38 +392,46 @@ def get_shop_tickets(
     if not current_user.shop_id:
          raise HTTPException(status_code=400, detail="No shop assigned")
 
-    target_start = None
-    target_end = None
-    try:
-        if start_date and end_date:
-            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-            target_start = datetime.combine(s_date, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(e_date, time.max) - timedelta(hours=7)
-        elif date:
-            t_date = datetime.strptime(date, "%Y-%m-%d").date()
-            target_start = datetime.combine(t_date, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(t_date, time.max) - timedelta(hours=7)
-        else:
-            today = (datetime.utcnow() + timedelta(hours=7)).date()
-            target_start = datetime.combine(today, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(today, time.max) - timedelta(hours=7)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format")
+    thai_today = get_thai_now().date()
+    s_date_str = start_date or date or thai_today.strftime("%Y-%m-%d")
+    e_date_str = end_date or date or thai_today.strftime("%Y-%m-%d")
 
-    query = db.query(Ticket).options(
-        selectinload(Ticket.items),
-        joinedload(Ticket.user),
-        joinedload(Ticket.lotto_type)
-    ).filter(
-        Ticket.shop_id == current_user.shop_id,
-        Ticket.created_at >= target_start,
-        Ticket.created_at <= target_end
-    )
-    if user_id:
-        query = query.filter(Ticket.user_id == user_id)
+    e_date_obj = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+    is_past = e_date_obj < thai_today
 
-    return query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
+    key_dict = {
+        "shop_id": str(current_user.shop_id), "skip": skip, "limit": limit,
+        "start": s_date_str, "end": e_date_str, 
+        "user": str(user_id) if user_id else "ALL"
+    }
+    cache_key = f"history_shop_{hashlib.md5(json.dumps(key_dict, sort_keys=True).encode()).hexdigest()}"
+
+    def fetch_from_db():
+        try:
+            s_d = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+            e_d = datetime.strptime(e_date_str, "%Y-%m-%d").date()
+            target_start = datetime.combine(s_d, time.min) - timedelta(hours=7)
+            target_end = datetime.combine(e_d, time.max) - timedelta(hours=7)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+
+        query = db.query(Ticket).options(
+                noload(Ticket.items),
+                joinedload(Ticket.user),
+                joinedload(Ticket.lotto_type),   
+            ).filter(
+                Ticket.shop_id == current_user.shop_id,
+                Ticket.created_at >= target_start,
+                Ticket.created_at <= target_end
+            )
+
+        if user_id: query = query.filter(Ticket.user_id == user_id)
+
+        orm_results = query.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
+        # 🚀 เพิ่ม from_attributes=True เข้าไปในวงเล็บ
+        return [TicketResponse.model_validate(t, from_attributes=True).model_dump() for t in orm_results]
+
+    return get_or_set_history(cache_key, is_past, fetch_from_db)
 
 # 🚀 API ใหม่: สำหรับดึงรายการเลขแทงเฉพาะบิลที่ลูกค้าต้องการดูรายละเอียด
 @router.get("/tickets/{ticket_id}/items")

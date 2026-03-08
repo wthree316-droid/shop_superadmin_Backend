@@ -134,6 +134,7 @@ class TicketResponse(BaseModel):
     lotto_type: Optional[LottoResponseShort] = None
     lotto_type_id: UUID
     commission_amount: Optional[Decimal] = Decimal('0.00')
+    winning_amount: Optional[Decimal] = 0
     class Config:
         from_attributes = True
 

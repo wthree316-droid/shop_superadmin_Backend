@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, DateTime, Time, JSON, Text, Date, UniqueConstraint, Integer, Index
+from sqlalchemy import Column, String, Boolean, ForeignKey, DECIMAL, DateTime, Time, JSON, Text, Date, UniqueConstraint, Integer, Index, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -66,6 +66,7 @@ class Ticket(Base):
     note = Column(String, nullable=True)
     total_amount = Column(DECIMAL(10, 2), nullable=False)
     status = Column(String, default=TicketStatus.PENDING)
+    winning_amount = Column(Numeric(10, 2), default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     round_date = Column(Date, nullable=True)
     commission_amount = Column(DECIMAL(10, 2), default=0.00)
