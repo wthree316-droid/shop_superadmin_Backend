@@ -11,6 +11,7 @@ from app.models.user import User
 from app.schemas import UserCreate, UserResponse, UserRole, Token
 from app.core.security import get_password_hash
 from app.models.shop import Shop
+from app.core.limiter import limiter
 
 router = APIRouter()
 
@@ -19,6 +20,7 @@ MAX_FAILED_ATTEMPTS = 5       # จำนวนครั้งที่ให้
 LOCKOUT_DURATION_MINUTES = 15 # ระยะเวลาที่ล็อค (นาที)
 
 @router.post("/login", response_model=Token)
+@limiter.limit("10/minute")
 def login_access_token(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -111,7 +113,9 @@ def login_access_token(
 
 
 @router.post("/register", response_model=UserResponse)
+@limiter.limit("5/minute")
 def register(
+    request: Request,
     user_in: UserCreate,
     db: Session = Depends(get_db)
 ):

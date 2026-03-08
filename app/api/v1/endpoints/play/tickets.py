@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session, joinedload, selectinload, noload
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy import desc
-
+from app.core.limiter import limiter
 from app.api import deps
 from app.schemas import TicketCreate, TicketResponse
 from app.db.session import get_db
@@ -19,7 +19,9 @@ from app.core.history_cache import get_or_set_history
 router = APIRouter()
 
 @router.post("/submit_ticket", response_model=TicketResponse)
+@limiter.limit("30/minute")
 def submit_ticket(
+    request: Request,
     ticket_in: TicketCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(deps.get_current_active_user)

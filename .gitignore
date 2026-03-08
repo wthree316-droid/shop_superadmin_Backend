@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+
+.env
+.env2
+seed_lotto.py
+seed_shop_demo.py
+seed_superadmin.py
+init_tables.py
+seed_lottos.py
+fix_lotto_categories.py
+migrate_flags.py

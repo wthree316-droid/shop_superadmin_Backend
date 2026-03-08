@@ -24,3 +24,4 @@ bcrypt==4.0.1
 supabase
 line-bot-sdk 
 pytz
+slowapi
