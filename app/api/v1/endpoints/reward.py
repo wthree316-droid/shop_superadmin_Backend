@@ -18,6 +18,7 @@ router = APIRouter()
 # ==========================================
 # 🌟 ฟังก์ชันสำหรับทำงานเบื้องหลัง (Background Worker)
 # ==========================================
+
 def process_reward_background(target_code: str, target_date: date, top_3: str, bottom_2: str):
     # ต้องเปิด Session ใหม่ เพราะ Session ของ API เดิมจะถูกปิดไปแล้วตอนส่ง Response
     db = SessionLocal() 
@@ -25,29 +26,8 @@ def process_reward_background(target_code: str, target_date: date, top_3: str, b
         # 1. หา Code หวย เพื่อดึงหวยประเภทเดียวกันจากทุกร้าน
         related_lottos = db.query(LottoType).filter(LottoType.code == target_code).all()
         related_lotto_ids = [l.id for l in related_lottos]
-
-        # 2. บันทึก/อัปเดตผลรางวัล (LottoResult)
-        for l_id in related_lotto_ids:
-            existing_result = db.query(LottoResult).filter(
-                LottoResult.lotto_type_id == l_id,
-                LottoResult.round_date == target_date
-            ).first()
-            
-            if existing_result:
-                existing_result.top_3 = top_3
-                existing_result.bottom_2 = bottom_2
-                existing_result.reward_data = {"top": top_3, "bottom": bottom_2}
-            else:
-                new_result = LottoResult(
-                    lotto_type_id=l_id,
-                    round_date=target_date,
-                    top_3=top_3,
-                    bottom_2=bottom_2,
-                    reward_data={"top": top_3, "bottom": bottom_2}
-                )
-                db.add(new_result)
         
-        # 3. 🔄 ระบบ Rollback (ดึงบิลทั้งหมดของรอบนี้)
+        # 2. 🔄 ระบบ Rollback (ดึงบิลทั้งหมดของรอบนี้)
         all_tickets = db.query(Ticket).options(joinedload(Ticket.items)).filter(
             Ticket.lotto_type_id.in_(related_lotto_ids),
             Ticket.round_date == target_date,
