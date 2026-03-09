@@ -150,8 +150,33 @@ def issue_reward(
     source_lotto = db.query(LottoType).get(data.lotto_type_id)
     if not source_lotto:
         raise HTTPException(status_code=404, detail="Lotto type not found")
+        
+    # 🌟 1. [เพิ่มใหม่] เซฟเลขรางวัลลงตาราง LottoResult "ทันที" เพื่อให้หน้าเว็บเห็นเลขปุ๊บปั๊บ
+    related_lottos = db.query(LottoType).filter(LottoType.code == source_lotto.code).all()
     
-    # 🌟 โยนงานหนักไปให้ Background Task ทำ แล้วระบบจะข้ามบรรทัดนี้ไปเลยทันที
+    for lotto in related_lottos:
+        existing_result = db.query(LottoResult).filter(
+            LottoResult.lotto_type_id == lotto.id,
+            LottoResult.round_date == target_date
+        ).first()
+        
+        if existing_result:
+            existing_result.top_3 = data.top_3
+            existing_result.bottom_2 = data.bottom_2
+            existing_result.reward_data = {"top": data.top_3, "bottom": data.bottom_2}
+        else:
+            new_result = LottoResult(
+                lotto_type_id=lotto.id,
+                round_date=target_date,
+                top_3=data.top_3,
+                bottom_2=data.bottom_2,
+                reward_data={"top": data.top_3, "bottom": data.bottom_2}
+            )
+            db.add(new_result)
+            
+    db.commit() # เซฟเลขลง Database ทันที!
+
+    # 🌟 2. โยนงานคำนวณบิลลูกค้า ไปทำเบื้องหลัง
     background_tasks.add_task(
         process_reward_background,
         target_code=source_lotto.code,
@@ -160,10 +185,9 @@ def issue_reward(
         bottom_2=data.bottom_2
     )
 
-    # ตอบกลับแอดมินทันทีในพริบตาเดียว
     return {
         "success": True,
-        "message": "ระบบกำลังดำเนินการแจกรางวัลเบื้องหลัง ยอดเงินจะเข้าอัตโนมัติในอีกสักครู่"
+        "message": "บันทึกตัวเลขสำเร็จ! ระบบกำลังทยอยคำนวณรางวัลให้ลูกค้าเบื้องหลัง"
     }
 
 
