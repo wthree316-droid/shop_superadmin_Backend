@@ -31,20 +31,29 @@ def create_bulk_risks(
         except ValueError:
             pass
 
+    start_of_day = risk_created_at
+    end_of_day = risk_created_at + timedelta(days=1)
+
     try:
+        # 🚀 1. ดึงเลขอั้นเดิมทั้งหมดของหวยนี้ในวันนี้ มารวดเดียวจบ (แก้ปัญหาคอขวด N+1)
+        existing_risks = db.query(NumberRisk).filter(
+            NumberRisk.lotto_type_id == payload.lotto_type_id,
+            NumberRisk.created_at >= start_of_day,
+            NumberRisk.created_at < end_of_day
+        ).all()
+        
+        # แปลงเป็น Dictionary เพื่อให้ค้นหาไวปรื๊ด
+        existing_map = {f"{r.number}:{r.specific_bet_type}": r for r in existing_risks}
+
+        # 🚀 2. วนลูปเทียบใน Memory (ไม่ต้องไปกวน Database แล้ว)
         for item in payload.items:
-            start_of_day = risk_created_at
-            end_of_day = risk_created_at + timedelta(days=1)
-
-            existing = db.query(NumberRisk).filter(
-                NumberRisk.lotto_type_id == payload.lotto_type_id,
-                NumberRisk.number == item.number,
-                NumberRisk.specific_bet_type == item.specific_bet_type,
-                NumberRisk.created_at >= start_of_day,
-                NumberRisk.created_at < end_of_day
-            ).first()
-
-            if not existing:
+            key = f"{item.number}:{item.specific_bet_type}"
+            
+            if key in existing_map:
+                # ถ้ามีอยู่แล้ว อัปเดตสถานะ (เช่น เปลี่ยนจาก จ่ายครึ่ง เป็น ปิดรับ)
+                existing_map[key].risk_type = payload.risk_type
+            else:
+                # ถ้าไม่มี ให้สร้างใหม่
                 new_risk = NumberRisk(
                     lotto_type_id=payload.lotto_type_id,
                     number=item.number,
@@ -55,8 +64,6 @@ def create_bulk_risks(
                 )
                 db.add(new_risk)
                 count += 1
-            else:
-                existing.risk_type = payload.risk_type
         
         db.commit()
         invalidate_cache(str(payload.lotto_type_id))

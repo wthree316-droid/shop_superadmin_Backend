@@ -3,54 +3,53 @@ import time
 import threading
 from typing import Any, Dict, Callable
 
-# เก็บข้อมูล Cache ในหน่วยความจำ (RAM)
 _STATS_CACHE: Dict[str, Dict[str, Any]] = {}
 _cache_lock = threading.Lock()
 
-# ⏱️ ระยะเวลาที่ให้อยู่ใน Cache (60 วินาที)
-# สถิติไม่จำเป็นต้อง Real-time ทุกวินาที ช้าไป 1 นาทีไม่มีผลเสียอะไรเลย
+# 🌟 เพิ่ม Dict สำหรับเก็บกุญแจล็อคเฉพาะแต่ละ Cache Key ป้องกันคนแย่งกันดึง DB
+_key_locks: Dict[str, threading.Lock] = {}
+
 CACHE_TTL = 60  
 
 def get_or_set_stats_cache(cache_key: str, fetch_func: Callable[[], Any], ttl: int = CACHE_TTL) -> Any:
-    """
-    ฟังก์ชันอเนกประสงค์สำหรับดึง Cache สถิติ 
-    ถ้ายกเลิก/หมดอายุ จะเรียก `fetch_func()` เพื่อดึงจาก DB ใหม่
-    """
     current_time = time.time()
 
-    # 1. เช็คว่ามีของใน Cache ไหม (ใช้ Lock ป้องกันการอ่าน/เขียนพร้อมกัน)
+    # 1. เช็คว่ามีของใน Cache ไหม
     with _cache_lock:
         cache_entry = _STATS_CACHE.get(cache_key)
-        
-        # ถ้ามี Cache และยังไม่หมดอายุ -> ส่งของเก่ากลับไปเลย (ไวระดับ 0.001 วิ)
         if cache_entry and (current_time - cache_entry['timestamp'] < ttl):
-            # print(f"⚡ [Cache HIT] {cache_key}")
             return cache_entry['data']
+            
+        # ถ้าไม่มีล็อคของ Key นี้ ให้สร้างขึ้นมา
+        if cache_key not in _key_locks:
+            _key_locks[cache_key] = threading.Lock()
+        key_lock = _key_locks[cache_key]
 
-    # 2. ถ้าไม่มี Cache หรือหมดอายุ -> สั่งประมวลผลใหม่ผ่านฟังก์ชันที่ส่งมา
-    # print(f"🔄 [Cache MISS] Querying DB for {cache_key}")
-    data = fetch_func()
+    # 2. 🌟 บังคับให้เข้าคิว (แก้ปัญหา Cache Stampede ยิง DB พร้อมกันร้อยคน)
+    with key_lock:
+        # Double-check: พอเข้ามาในคิวได้แล้ว เช็คอีกรอบเผื่อว่าคนก่อนหน้าเพิ่งดึงข้อมูลเสร็จ
+        with _cache_lock:
+            cache_entry = _STATS_CACHE.get(cache_key)
+            if cache_entry and (current_time - cache_entry['timestamp'] < ttl):
+                return cache_entry['data']
+        
+        # 3. ให้คนแรกแค่ "คนเดียว" เท่านั้นที่เป็นคนวิ่งไปหา Database!
+        data = fetch_func()
 
-    # 3. เซฟของใหม่ลง Cache
-    with _cache_lock:
-        _STATS_CACHE[cache_key] = {
-            'data': data,
-            'timestamp': time.time()
-        }
+        # 4. เซฟของใหม่ลง Cache และแจกจ่ายให้คนที่รอในคิว
+        with _cache_lock:
+            _STATS_CACHE[cache_key] = {
+                'data': data,
+                'timestamp': time.time()
+            }
 
     return data
 
 def invalidate_stats_cache(shop_id: str = None):
-    """
-    ฟังก์ชันสำหรับล้าง Cache 
-    (เอาไว้เรียกตอนมีคนกดยกเลิกโพย เพื่อให้สถิติอัปเดตทันที)
-    """
     with _cache_lock:
         if shop_id:
-            # ล้างเฉพาะของร้านนั้นๆ
             keys_to_delete = [k for k in _STATS_CACHE.keys() if f"shop_{shop_id}" in k]
             for k in keys_to_delete:
                 del _STATS_CACHE[k]
         else:
-            # ล้างทั้งหมด
             _STATS_CACHE.clear()

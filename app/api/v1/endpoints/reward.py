@@ -13,6 +13,7 @@ from typing import List, Optional, Dict
 from uuid import UUID 
 from app.core.game_logic import check_is_win_precise
 from app.core.history_cache import get_or_set_history, clear_all_history_cache
+from app.core.stats_cache import invalidate_stats_cache  # 🌟 เพิ่มคำสั่งนี้
 
 router = APIRouter()
 
@@ -105,6 +106,7 @@ def process_reward_background(target_code: str, target_date: date, top_3: str, b
         db.commit() # เซฟลง Database รวดเดียวจบ!
         
         clear_all_history_cache()
+        invalidate_stats_cache()
         print(f"✅ Background Reward Issue Success! Processed {len(all_tickets)} tickets.")
 
     except Exception as e:
