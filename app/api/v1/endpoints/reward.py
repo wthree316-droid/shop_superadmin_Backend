@@ -12,6 +12,7 @@ from datetime import date
 from typing import List, Optional, Dict
 from uuid import UUID 
 from app.core.game_logic import check_is_win_precise
+from app.core.history_cache import get_or_set_history, clear_all_history_cache
 
 router = APIRouter()
 
@@ -90,14 +91,20 @@ def process_reward_background(target_code: str, target_date: date, top_3: str, b
                 ticket.status = TicketStatus.LOSE
                 ticket.winning_amount = 0
 
-        # 4. บันทึกการเปลี่ยนแปลงเงิน User
-        for uid, amount in user_balance_adjustments.items():
-            if amount != 0:
-                user = db.query(User).filter(User.id == uid).first()
-                if user:
-                    user.credit_balance += amount
+        # 4. 🚀 บันทึกการเปลี่ยนแปลงเงิน User (แบบรวดเดียวจบ)
+        winning_uids = [uid for uid, amount in user_balance_adjustments.items() if amount != 0]
+        
+        if winning_uids:
+            # ดึงข้อมูล User ที่ได้เงิน/เสียเงิน "ทั้งหมด" มารวดเดียว (ใช้ with_for_update เพื่อล็อคป้องกันเงินรวน)
+            affected_users = db.query(User).filter(User.id.in_(winning_uids)).with_for_update().all()
+            
+            # บวก/ลบ เงินในหน่วยความจำ
+            for user in affected_users:
+                user.credit_balance += user_balance_adjustments[user.id]
 
-        db.commit()
+        db.commit() # เซฟลง Database รวดเดียวจบ!
+        
+        clear_all_history_cache()
         print(f"✅ Background Reward Issue Success! Processed {len(all_tickets)} tickets.")
 
     except Exception as e:
@@ -156,9 +163,8 @@ def issue_reward(
             
     db.commit() # เซฟเลขลง Database ทันที!
 
-    # 🌟 2. โยนงานคำนวณบิลลูกค้า ไปทำเบื้องหลัง
-    background_tasks.add_task(
-        process_reward_background,
+    # 🌟 เปลี่ยนจากการโยนเข้า Background Task เป็นการเรียกใช้งานตรงๆ ไปเลย
+    process_reward_background(
         target_code=source_lotto.code,
         target_date=target_date,
         top_3=data.top_3,
@@ -167,7 +173,7 @@ def issue_reward(
 
     return {
         "success": True,
-        "message": "บันทึกตัวเลขสำเร็จ! ระบบกำลังทยอยคำนวณรางวัลให้ลูกค้าเบื้องหลัง"
+        "message": "บันทึกตัวเลขและคำนวณเงินรางวัลให้ลูกค้าเสร็จสมบูรณ์!"
     }
 
 

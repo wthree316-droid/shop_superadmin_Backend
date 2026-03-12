@@ -52,3 +52,9 @@ def get_or_set_history(cache_key: str, is_past: bool, fetch_func: Callable[[], A
         }
         
     return fresh_data
+
+# เพิ่มฟังก์ชันนี้ไว้ล่างสุดของไฟล์ เพื่อใช้ล้างแคชตอนแอดมินกดแจกรางวัล
+def clear_all_history_cache():
+    global _HISTORY_CACHE
+    with _cache_lock:
+        _HISTORY_CACHE.clear()
