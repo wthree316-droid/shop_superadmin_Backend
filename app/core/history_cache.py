@@ -8,7 +8,7 @@ _HISTORY_CACHE = {}
 _cache_lock = threading.Lock()
 
 # จำกัดขนาด Cache ไม่ให้เกิน 2,000 รายการ ป้องกัน RAM เซิร์ฟเวอร์ระเบิด
-MAX_CACHE_ITEMS = 2000 
+MAX_CACHE_ITEMS = 200 
 
 def get_or_set_history(cache_key: str, is_past: bool, fetch_func: Callable[[], Any]) -> Any:
     global _HISTORY_CACHE
