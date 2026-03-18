@@ -152,6 +152,13 @@ def submit_ticket(
     processed_items = []
     total_amount = Decimal(0)
 
+    # 🌟 ฟังก์ชันช่วยแปลงตัวเลขให้ปลอดภัย (ดักจับกรณีเป็นค่าว่าง "")
+    def safe_dec(val, default_val):
+        try:
+            return Decimal(str(val)) if str(val).strip() != "" else Decimal(str(default_val))
+        except:
+            return Decimal(str(default_val))
+
     for item_in in ticket_in.items:
         check_key = f"{item_in.number}:{item_in.bet_type}"
         check_key_all = f"{item_in.number}:ALL"
@@ -162,12 +169,13 @@ def submit_ticket(
         min_bet = Decimal("1")
         max_bet = Decimal("0")
 
+        # 🚀 ใช้ฟังก์ชันช่วยแปลงตัวเลขแทนการครอบ Decimal ตรงๆ
         if isinstance(rate_config, (int, float, str, Decimal)):
-            base_pay = Decimal(str(rate_config))
+            base_pay = safe_dec(rate_config, 0)
         else:
-            base_pay = Decimal(str(rate_config.get('pay', 0)))
-            min_bet = Decimal(str(rate_config.get('min', 1)))
-            max_bet = Decimal(str(rate_config.get('max', 0)))
+            base_pay = safe_dec(rate_config.get('pay'), 0)
+            min_bet = safe_dec(rate_config.get('min'), 1)
+            max_bet = safe_dec(rate_config.get('max'), 0)
 
         final_amount = Decimal(str(item_in.amount)) 
         final_rate = base_pay
