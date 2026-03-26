@@ -47,6 +47,8 @@ venv.bak/
 *.log
 
 init_tables.py
+init_system.py
 seed_lottos.py
 fix_lotto_categories.py
 migrate_flags.py
+db.sql
