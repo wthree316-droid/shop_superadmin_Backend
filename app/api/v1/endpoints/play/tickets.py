@@ -45,7 +45,7 @@ def submit_ticket(
     today_date = now_thai.date()
     now_time = now_thai.time()
 
-    # 3. ตรวจสอบเวลาปิด (Strict Check) รองรับข้ามวัน
+    # 3. ตรวจสอบเวลาเปิด (Strict Check) รองรับข้ามวัน
     close_time_obj = None
     open_time_obj = None
     
@@ -65,43 +65,43 @@ def submit_ticket(
         except:
             pass
 
-    day_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
-    allowed_days = [day_map[d] for d in (lotto.open_days or [])]
-    is_today_open = today_date.weekday() in allowed_days
-
-    # ตรวจสอบว่าหวยข้ามวันหรือไม่ (เช่น เปิด 08:00 ปิด 00:10)
+    # ตรวจสอบว่าหวยข้ามวันหรือไม่ (เช่น เปิด 20:00 ปิด 00:30)
     is_overnight = False
     if open_time_obj and close_time_obj:
-        # ถ้าเวลาปิด < เวลาเปิด แสดงว่าข้ามวัน
         if close_time_obj < open_time_obj:
             is_overnight = True
-    
-    # ถ้าวันนี้เปิด แต่เลยเวลาปิด -> Error
-    if is_today_open and close_time_obj:
-        if is_overnight:
-            # กรณีข้ามวัน: ปิดรับเมื่อ เวลา >= เวลาเปิด และเวลา > เวลาปิด
-            # หรือ เวลา < เวลาเปิด และเวลา > เวลาปิด
-            # ให้เปิดรับได้ถ้า: เวลา >= เวลาเปิด หรือ เวลา <= เวลาปิด
-            if not (now_time >= open_time_obj or now_time <= close_time_obj):
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)"
-                )
-        else:
-            # กรณีปกติ (ไม่ข้ามวัน)
-            if now_time > close_time_obj:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)"
-                )
 
-    # 4. คำนวณงวด (รองรับการตัดรอบวันใหม่)
+    # 🌟 4. คำนวณงวด (Round Date) ให้ฉลาดขึ้นสำหรับหวยข้ามวัน
+    target_round_date = get_round_date(now_thai, settings.DAY_CUTOFF_TIME)
+    
+    if is_overnight:
+        if now_time <= close_time_obj:
+            # ถ้าแทงหลังเที่ยงคืน แต่ยังไม่ถึงเวลาปิด -> ให้บังคับเป็นงวดของเมื่อวาน
+            target_round_date = today_date - timedelta(days=1)
+        elif now_time >= open_time_obj:
+            # ถ้าแทงก่อนเที่ยงคืน (หลังเวลาเปิด) -> ให้เป็นงวดของวันนี้ตามปกติ
+            target_round_date = today_date
+
+    # 🌟 5. ตรวจสอบว่า "งวดนี้" เปิดรับแทงหรือไม่ (ใช้วันที่ของงวดแทนวันที่กดแทง เพื่อไม่ให้ข้ามวันแล้วพัง)
+    day_map = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+    allowed_days = [day_map[d] for d in (lotto.open_days or [])]
+    is_round_open = target_round_date.weekday() in allowed_days
+
+    # 6. ตรวจสอบเวลาว่า "หมดเวลาหรือยัง"
+    if close_time_obj:
+        if is_overnight:
+            # กรณีข้ามวัน: ต้องอยู่ในช่วงเวลา (>= เวลาเปิด) หรือ (<= เวลาปิด)
+            if not (now_time >= open_time_obj or now_time <= close_time_obj):
+                raise HTTPException(status_code=400, detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)")
+        else:
+            # กรณีปกติ: ถ้าเวลาปัจจุบันมากกว่าเวลาปิด คือหมดเวลา
+            if now_time > close_time_obj:
+                raise HTTPException(status_code=400, detail=f"ปิดรับแทงแล้วครับ (ปิด {t_str[:5]} น.)")
+
+    # 7. จัดการหวยรายเดือน vs รายวัน
     rules = lotto.rules if lotto.rules else {} 
     schedule_type = rules.get('schedule_type', 'weekly')
     
-    # ใช้ get_round_date() เพื่อคำนวณงวดที่ถูกต้องตามเวลาตัดรอบ
-    target_round_date = get_round_date(now_thai, settings.DAY_CUTOFF_TIME)
-
     if schedule_type == 'monthly':
         # สำหรับหวยรายเดือน (เช่น หวยรัฐบาล)
         close_dates = rules.get('close_dates', [1, 16])
@@ -125,9 +125,8 @@ def submit_ticket(
              target_round_date = date(now_thai.year, now_thai.month, found_date)
     else:
         # สำหรับหวยรายวัน (weekly/daily)
-        if not is_today_open:
-             raise HTTPException(status_code=400, detail="วันนี้ไม่มีรอบเปิดรับแทง")
-        # target_round_date ถูกคำนวณจาก get_round_date() แล้วด้านบน
+        if not is_round_open:
+             raise HTTPException(status_code=400, detail="งวดนี้ไม่มีรอบเปิดรับแทง")
 
     # 5. ตรวจเลขอั้น
     r_start = datetime.combine(target_round_date, time.min) - timedelta(hours=7)
@@ -364,8 +363,6 @@ def read_history(
         try:
             s_d = datetime.strptime(s_date_str, "%Y-%m-%d").date()
             e_d = datetime.strptime(e_date_str, "%Y-%m-%d").date()
-            target_start = datetime.combine(s_d, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(e_d, time.max) - timedelta(hours=7)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format")
 
@@ -374,8 +371,9 @@ def read_history(
             joinedload(Ticket.lotto_type)
         ).filter(
             Ticket.user_id == current_user.id,
-            Ticket.created_at >= target_start,
-            Ticket.created_at <= target_end
+            # 🚀 เปลี่ยนมาค้นหาจาก "งวดวันที่" แทน "เวลากดแทงจริง"
+            Ticket.round_date >= s_d,
+            Ticket.round_date <= e_d
         )
 
         if lotto_type_id: query = query.filter(Ticket.lotto_type_id == lotto_type_id)
@@ -416,12 +414,12 @@ def get_shop_tickets(
     }
     cache_key = f"history_shop_{hashlib.md5(json.dumps(key_dict, sort_keys=True).encode()).hexdigest()}"
 
+    # ในฟังก์ชัน get_shop_tickets -> fetch_from_db()
     def fetch_from_db():
         try:
             s_d = datetime.strptime(s_date_str, "%Y-%m-%d").date()
             e_d = datetime.strptime(e_date_str, "%Y-%m-%d").date()
-            target_start = datetime.combine(s_d, time.min) - timedelta(hours=7)
-            target_end = datetime.combine(e_d, time.max) - timedelta(hours=7)
+            # ลบ target_start, target_end บรรทัดเดิมทิ้งไปได้เลยครับ
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format")
 
@@ -431,8 +429,9 @@ def get_shop_tickets(
                 joinedload(Ticket.lotto_type),   
             ).filter(
                 Ticket.shop_id == current_user.shop_id,
-                Ticket.created_at >= target_start,
-                Ticket.created_at <= target_end
+                # 🚀 เปลี่ยนมาค้นหาจาก "งวดวันที่" แทน
+                Ticket.round_date >= s_d,
+                Ticket.round_date <= e_d
             )
 
         if user_id: query = query.filter(Ticket.user_id == user_id)
@@ -455,11 +454,12 @@ def get_ticket_items(
     if not ticket:
         raise HTTPException(status_code=404, detail="ไม่พบโพย")
         
-    # 2. ป้องกันคนแอบดูบิลคนอื่น (ต้องเป็นแอดมิน หรือเจ้าของบิลเท่านั้น)
-    if current_user.role not in [UserRole.admin, UserRole.superadmin]:
-        if ticket.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ดูโพยนี้")
-            
+    # 🌟 2. กำแพงตรวจสอบสิทธิ์ (อนุญาตแค่คนในร้านเดียวกัน)
+    if current_user.role != UserRole.superadmin:
+        # ถ้าไม่ใช่ Superadmin ต้องตรวจบัตรว่า "อยู่ร้านเดียวกันไหม?"
+        if ticket.shop_id != current_user.shop_id:
+            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ดูโพยของร้านอื่น")
+
     # 3. ดึงรายการเลขของบิลนี้ส่งกลับไป
     items = db.query(TicketItem).filter(TicketItem.ticket_id == ticket_id).all()
     
